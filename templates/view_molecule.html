@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Result View: {{ pdb_id }}</title>
+    <script src="https://unpkg.com/ngl@latest/dist/ngl.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <style>
+        .container { max-width: 1500px; margin: 0 auto; }
+        .row { display: flex; flex-wrap: nowrap; }
+        #viewport { width: 800px; height: 600px; }
+        #sidebar { width: 750px; margin-left: 20px; overflow-y: auto; max-height: 800px; }
+        table { width: 100%; font-size: 0.8em; }
+        th, td { padding: 2px; text-align: left; white-space: nowrap; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Result View: {{ pdb_id }}</h1>
+        <div class="row">
+            <div>
+                <div id="viewport"></div>
+                <div class="button-group">
+                    <button id="toggleResultsBtn" class="button">Toggle Results</button>
+                    <button id="toggleColorsBtn" class="button">Toggle Colors</button>
+                    <button id="centerViewBtn" class="button">Center View</button>
+                </div>
+            </div>
+            <div id="sidebar">
+                <h4>Matched Points</h4>
+                <table id="matchedPointsTable">
+                    <thead>
+                        <tr>
+                            <th>Match #</th>
+                            <th>DB ID</th>
+                            <th>Element</th>
+                            <th>Coordinates</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+
+                <h4>Distance Pairs</h4>
+                <table id="matchedPairsTable">
+                    <thead>
+                        <tr>
+                            <th>Pair ID</th>
+                            <th>Atom 1</th>
+                            <th>Atom 2</th>
+                            <th>Distance</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const stage = new NGL.Stage("viewport");
+        const pdb_id = "{{ pdb_id }}";
+        const matchData = {{ match_data|tojson|safe }};
+        const pairs = {{ pairs|tojson|safe }};
+        console.log("Match Data:", matchData);
+        console.log("Pairs:", pairs);
+
+        let showResults = true;
+        let useOriginalColors = true;
+        let atomData = [];
+        let dbIdToJsIndex = {};
+
+        // Color scheme for elements (using atomic numbers)
+        const elementColors = {
+            1: [1, 1, 1],     // H: White
+            6: [0.5, 0.5, 0.5], // C: Grey
+            7: [0, 0, 1],     // N: Blue
+            8: [1, 0, 0],     // O: Red
+            15: [1, 0.5, 0],  // P: Orange
+            16: [1, 1, 0],    // S: Yellow
+            'default': [0, 1, 0]   // Green (for other elements)
+        };
+
+        function getElementColor(atomicNumber) {
+            return elementColors[atomicNumber] || elementColors['default'];
+        }
+
+        function getElementSymbol(atomicNumber) {
+            const symbols = {
+                1: 'H', 6: 'C', 7: 'N', 8: 'O', 15: 'P', 16: 'S'
+            };
+            return symbols[atomicNumber] || `Element${atomicNumber}`;
+        }
+
+        function updateVisualization() {
+            console.log("Updating visualization with atom data:", atomData);
+            console.log("matchData:", matchData);
+            console.log("pairs:", pairs);
+
+            // Clear existing components
+            stage.removeAllComponents();
+
+            // Create a shape for all atoms
+            const allAtomsShape = new NGL.Shape("all_atoms");
+            atomData.forEach((atom, index) => {
+                const color = useOriginalColors ? getElementColor(atom.element) : [0.7, 0.7, 0.7]; // Grey if not using original colors
+                allAtomsShape.addSphere([atom.x, atom.y, atom.z], color, 0.3);
+            });
+
+            // Add all atoms to the stage
+            const allAtomsComp = stage.addComponentFromObject(allAtomsShape);
+            allAtomsComp.addRepresentation("ball+stick");
+
+            // Create a shape for matched atoms
+            const matchedAtomsShape = new NGL.Shape("matched_atoms");
+            matchData.forEach((match, index) => {
+                const dbId = match[1];
+                const atom = atomData[dbIdToJsIndex[dbId]];
+                if (atom) {
+                    const color = getElementColor(atom.element); // Always use correct colors for matched atoms
+                    matchedAtomsShape.addSphere([atom.x, atom.y, atom.z], color, 0.5);
+                } else {
+                    console.warn(`No atom found for DB ID: ${dbId}`);
+                }
+            });
+
+            // Add matched atoms to the stage
+            const matchedAtomsComp = stage.addComponentFromObject(matchedAtomsShape);
+            matchedAtomsComp.addRepresentation("ball+stick");
+
+            // Add distance cylinders for matched pairs
+            const cylinderShape = new NGL.Shape('distance_cylinders');
+            pairs.forEach((pair, index) => {
+                if (pair.length !== 2) {
+                    console.warn(`Invalid pair at index ${index}:`, pair);
+                    return;
+                }
+                const atom1 = pair[0] && matchData[pair[0] - 1] ? atomData[dbIdToJsIndex[matchData[pair[0] - 1][1]]] : null;
+                const atom2 = pair[1] && matchData[pair[1] - 1] ? atomData[dbIdToJsIndex[matchData[pair[1] - 1][1]]] : null;
+
+                if (atom1 && atom2) {
+                    console.log(`Adding cylinder for pair ${index + 1}: Atom1 (DB ID: ${atom1.id}, Match: ${pair[0]}), Atom2 (DB ID: ${atom2.id}, Match: ${pair[1]})`);
+                    cylinderShape.addCylinder(
+                        [atom1.x, atom1.y, atom1.z],
+                        [atom2.x, atom2.y, atom2.z],
+                        [1, 1, 0, 0.5], // Yellow color with 50% opacity
+                        0.1 // Radius of the cylinder
+                    );
+                } else {
+                    console.warn(`No valid atoms found for pair ${index + 1}. Atom1 Match: ${pair[0]}, Atom2 Match: ${pair[1]}`);
+                }
+            });
+            const cylinderComp = stage.addComponentFromObject(cylinderShape);
+            cylinderComp.addRepresentation('cylinder');
+
+            // Set visibility of matched atoms and cylinders
+            matchedAtomsComp.setVisibility(showResults);
+            cylinderComp.setVisibility(showResults);
+
+            stage.viewer.requestRender();
+        }
+
+        function centerOnAtom(atom) {
+            const position = new NGL.Vector3(atom.x, atom.y, atom.z);
+            stage.animationControls.zoomMove(
+                position,
+                position.distanceTo(stage.viewer.camera.position) / 4,
+                1000
+            );
+        }
+
+        function centerOnPair(atom1, atom2) {
+            const center = new NGL.Vector3(
+                (atom1.x + atom2.x) / 2,
+                (atom1.y + atom2.y) / 2,
+                (atom1.z + atom2.z) / 2
+            );
+            const distance = Math.sqrt(
+                Math.pow(atom1.x - atom2.x, 2) +
+                Math.pow(atom1.y - atom2.y, 2) +
+                Math.pow(atom1.z - atom2.z, 2)
+            );
+            stage.animationControls.zoomMove(
+                center,
+                distance * 5,
+                1000
+            );
+        }
+
+        fetch(`/get_molecule/${pdb_id}`)
+            .then(response => response.json())
+            .then(data => {
+                atomData = data;
+                console.log("Atom data received:", atomData.slice(0, 5));
+                console.log("Total atoms:", atomData.length);
+
+                // Create mapping from DB_ID to JS index
+                atomData.forEach((atom, index) => {
+                    dbIdToJsIndex[atom.id] = index;
+                });
+
+                updateVisualization();
+
+                // Center view on all atoms
+                stage.autoView();
+
+                // Display matched points in the table
+                const matchedPointsTableBody = document.querySelector('#matchedPointsTable tbody');
+                matchData.forEach(([matchNr, dbId]) => {
+                    const atom = atomData[dbIdToJsIndex[dbId]];
+                    if (atom) {
+                        const row = matchedPointsTableBody.insertRow();
+                        row.innerHTML = `
+                            <td>${matchNr}</td>
+                            <td>${dbId}</td>
+                            <td>${getElementSymbol(atom.element)}</td>
+                            <td>(${atom.x.toFixed(2)}, ${atom.y.toFixed(2)}, ${atom.z.toFixed(2)})</td>
+                            <td>
+                                <button class="button button-outline btn-small center-btn">Center</button>
+                            </td>
+                        `;
+                        row.querySelector('.center-btn').addEventListener('click', () => centerOnAtom(atom));
+                    } else {
+                        console.warn(`No atom found for DB ID: ${dbId}`);
+                    }
+                });
+
+                // Display distance pairs in the table
+                const matchedPairsTableBody = document.querySelector('#matchedPairsTable tbody');
+                pairs.forEach((pair, index) => {
+                    const atom1_matchid = pair[0].toString();
+                    const atom2_matchid = pair[1].toString();
+
+                    console.log("Atom1 Match ID:", atom1_matchid);
+                    console.log("Atom2 Match ID:", atom2_matchid);
+
+                    const atom1_dbid = matchData.find(([matchNr, _]) => matchNr === atom1_matchid)?.[1];
+                    const atom2_dbid = matchData.find(([matchNr, _]) => matchNr === atom2_matchid)?.[1];
+
+                    const atom1 = atom1_dbid ? atomData[dbIdToJsIndex[atom1_dbid]] : null;
+                    const atom2 = atom2_dbid ? atomData[dbIdToJsIndex[atom2_dbid]] : null;
+
+                    const row = matchedPairsTableBody.insertRow();
+                    if (atom1 && atom2) {
+                        const distance = Math.sqrt(
+                            Math.pow(atom1.x - atom2.x, 2) +
+                            Math.pow(atom1.y - atom2.y, 2) +
+                            Math.pow(atom1.z - atom2.z, 2)
+                        );
+                        row.innerHTML = `
+                            <td>${index + 1}</td>
+                            <td>Match #${atom1_matchid}: ${getElementSymbol(atom1.element)} (DB ID: ${atom1.id})</td>
+                            <td>Match #${atom2_matchid}: ${getElementSymbol(atom2.element)} (DB ID: ${atom2.id})</td>
+                            <td>${distance.toFixed(2)} Å</td>
+                            <td>
+                                <button class="button button-outline btn-small center-btn">Center</button>
+                            </td>
+                        `;
+
+                        // Add hover effect
+                        row.addEventListener('mouseenter', () => {
+                            highlightAtoms(atom1.id, atom2.id);
+                        });
+                        row.addEventListener('mouseleave', () => {
+                            unhighlightAtoms();
+                        });
+
+                        // Add center functionality
+                        row.querySelector('.center-btn').addEventListener('click', () => {
+                            centerOnPair(atom1, atom2);
+                        });
+                    } else {
+                        row.innerHTML = `
+                            <td>${index + 1}</td>
+                            <td>${atom1_matchid ? `Match #${atom1_matchid}` : 'Not found'}</td>
+                            <td>${atom2_matchid ? `Match #${atom2_matchid}` : 'Not found'}</td>
+                            <td>N/A</td>
+                            <td>N/A</td>
+                        `;
+                    }
+                });
+
+                function highlightAtoms(id1, id2) {
+                    const atomRows = document.querySelectorAll('#matchedPointsTable tbody tr');
+                    atomRows.forEach((row) => {
+                        const rowId = row.querySelector('td:nth-child(2)').textContent;
+                        if (rowId === id1.toString() || rowId === id2.toString()) {
+                            row.style.backgroundColor = 'yellow';
+                        }
+                    });
+                }
+
+                function unhighlightAtoms() {
+                    const atomRows = document.querySelectorAll('#matchedPointsTable tbody tr');
+                    atomRows.forEach(row => {
+                        row.style.backgroundColor = '';
+                    });
+                }
+
+                console.log("Matches displayed:", matchData.length);
+                console.log("Pairs displayed:", pairs.length);
+
+                // Add event listeners for toggle buttons
+                document.getElementById('toggleResultsBtn').addEventListener('click', function() {
+                    showResults = !showResults;
+                    updateVisualization();
+                });
+
+                document.getElementById('toggleColorsBtn').addEventListener('click', function() {
+                    useOriginalColors = !useOriginalColors;
+                    updateVisualization();
+                });
+
+                document.getElementById('centerViewBtn').addEventListener('click', function() {
+                    stage.autoView();
+                });
+            })
+            .catch(error => {
+                console.error('Error loading molecule:', error);
+            });
+    </script>
+</body>
+</html>

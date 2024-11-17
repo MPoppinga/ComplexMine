@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Results</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
+    <style>
+        body { padding: 20px; font-family: Arial, sans-serif; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        #loader { text-align: center; margin-bottom: 20px; }
+        #sqlQuery { width: 100%; height: 60px; margin-top: 20px; overflow-y: auto; font-size: 0.8em; }
+        #errorMessage { color: red; margin-top: 20px; }
+        #results { margin-top: 20px; }
+        #results table { width: 100%; font-size: 0.8em; }
+        #results th, #results td { padding: 5px; text-align: left; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Search Results</h1>
+        <div id="loader" style="display: none;">
+            <p>Searching for matching molecules...</p>
+            <p id="timer">Elapsed Time: 0s</p>
+        </div>
+        <textarea id="sqlQuery" readonly style="display: none;"></textarea>
+        <button id="copySqlBtn" style="display: none;" class="button">Copy SQL</button>
+        <div id="results"></div>
+        <div id="errorMessage"></div>
+    </div>
+
+    <script>
+        let elapsedTime = 0;
+        let timerInterval;
+        let usePostGIS = new URLSearchParams(window.location.search).get('usePostGIS') === 'true';
+
+        function startTimer() {
+            timerInterval = setInterval(() => {
+                elapsedTime++;
+                document.getElementById('timer').textContent = 'Elapsed Time: ' + elapsedTime + 's';
+            }, 1000);
+        }
+
+        function stopTimer() {
+            clearInterval(timerInterval);
+        }
+
+        function copySqlToClipboard() {
+            const sqlQuery = document.getElementById('sqlQuery');
+            sqlQuery.select();
+            document.execCommand('copy');
+            alert('SQL query copied to clipboard!');
+        }
+
+        document.getElementById('copySqlBtn').addEventListener('click', copySqlToClipboard);
+
+        function displayResults(results, searchData, limitReached) {
+            const resultsDiv = document.getElementById('results');
+            if (results.length === 0) {
+                resultsDiv.innerHTML = '<p>No matching molecules found.</p>';
+            } else {
+                let resultsHtml = '<table><thead><tr><th>PDB ID</th><th>Matching Points</th><th>Action</th></tr></thead><tbody>';
+                results.forEach(result => {
+                    const matches = result.matches;
+                    const pairs = searchData.map(pair => [pair.atom1.matchid, pair.atom2.matchid]);
+                    
+                    console.log("Generated pairs:", pairs);  // Debugging line
+
+                    const viewUrl = `/view_molecule/${result.pdb_id}?matches=${encodeURIComponent(JSON.stringify(matches))}&pairs=${encodeURIComponent(JSON.stringify(pairs))}`;
+                    
+                    resultsHtml += `
+                        <tr>
+                            <td>${result.pdb_id}</td>
+                            <td>${Object.entries(matches).map(([matchNr, dbId]) => `${matchNr}: ${dbId}`).join(', ')}</td>
+                            <td><a href="${viewUrl}" target="_blank" class="button button-outline">View</a></td>
+                        </tr>
+                    `;
+                });
+                resultsHtml += '</tbody></table>';
+                
+                if (limitReached) {
+                    resultsHtml += '<p><strong>Note:</strong> Search results are limited to 500 matches. There may be more matches available.</p>';
+                }
+                
+                resultsDiv.innerHTML = resultsHtml;
+            }
+        }
+
+        // This function will be called from molecule_viewer.js
+        function initializeSearchResults(sqlQuery, searchData, usePostGISValue) {
+            usePostGIS = usePostGISValue;
+            document.getElementById('sqlQuery').value = sqlQuery;
+            document.getElementById('sqlQuery').style.display = 'block';
+            document.getElementById('copySqlBtn').style.display = 'inline-block';
+            document.getElementById('loader').style.display = 'block';
+            startTimer();
+
+            // Execute the search
+            fetch('/search', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    selected_pairs: searchData,
+                    use_postgis: usePostGIS,
+                    skip_execution: false
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                stopTimer();
+                document.getElementById('loader').style.display = 'none';
+                if (data.error) {
+                    throw new Error(data.error);
+                } else if (data.results) {
+                    displayResults(data.results, searchData, data.limit_reached);  
+                } else {
+                    throw new Error('Unexpected response from server');
+                }
+            })
+            .catch(error => {
+                stopTimer();
+                console.error('Error during search:', error);
+                document.getElementById('loader').style.display = 'none';
+                document.getElementById('errorMessage').textContent = `An error occurred: ${error.message}. Please try again.`;
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+biopython
+pytest
+sqlalchemy
+Flask
+Flask-CORS
+psycopg[binary]
+rdkit-pypi
+redis
+partitioncache @ git+https://github.com/MPoppinga/PartitionCache@main
+

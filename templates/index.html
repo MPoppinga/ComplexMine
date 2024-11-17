@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoMetric Search - Molecule Viewer</title>
+    <script src="https://unpkg.com/ngl@latest/dist/ngl.js"></script>
+    <!-- Milligram CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <style>
+        .container { max-width: 1500px; margin: 0 auto; }
+        .row { display: flex; flex-wrap: nowrap; }
+        #viewport { width: 800px; height: 600px; }
+        #sidebar { width: 750px; margin-left: 20px; overflow-y: auto; max-height: 800px; }
+        table { width: 100%; font-size: 0.8em; }
+        th, td { padding: 2px; text-align: left; white-space: nowrap; }
+        #searchResults { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GeoMetric Search - Molecule Viewer</h1>
+        <div class="row">
+            <div>
+                <label for="pdbSelect">Select Molecule:</label>
+                <select id="pdbSelect">
+                    <!-- Options will be populated by JavaScript -->
+                </select>
+                <div id="viewport"></div>
+            </div>
+            <div id="sidebar">
+                <h4>Selected Atoms</h4>
+                <table id="atomList">
+                    <thead>
+                        <tr>
+                            <th>Match #</th>
+                            <th>DB ID</th>
+                            <th>Element</th>
+                            <th>Coordinates</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+
+                <h4>Distance Pairs</h4>
+                <table id="pairList">
+                    <thead>
+                        <tr>
+                            <th>Pair ID</th>
+                            <th>Atom 1</th>
+                            <th>Atom 2</th>
+                            <th>Distance</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+
+                <div id="addPairForm">
+                    <h5>Add Pair</h5>
+                    <select id="atom1Select"></select>
+                    <select id="atom2Select"></select>
+                    <button id="addPairButton" class="button">Add Pair</button>
+                    <button id="addPairNGLButton" class="button">Add Pair in NGL</button>
+                </div>
+
+                <div id="searchOptions">
+                    <label>
+                        <input type="checkbox" id="usePostGIS">
+                        Use PostGIS for spatial search
+                    </label>
+                </div>
+
+                <button id="searchButton" class="button">Search Database</button>
+            </div>
+        </div>
+        <div id="searchResults" style="display: none;"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/molecule_viewer.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+.container { max-width: 1200px; }
+.row { display: flex; }
+#viewport { width: 800px; height: 600px; }
+#sidebar { margin-left: 20px; width: 300px; }
+.atom-item, .pair-item { margin-bottom: 10px; }
+.btn-small { padding: 0 10px; height: 28px; line-height: 28px; }
