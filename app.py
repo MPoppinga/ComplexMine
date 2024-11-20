@@ -9,6 +9,7 @@ import partitioncache.cache_handler
 import partitioncache.query_processor
 import partitioncache.queue
 import psycopg
+import sqlparse
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 from flask_cors import CORS
@@ -352,7 +353,7 @@ def search():
             app.logger.debug(f"Generated SQL query: {sql_query.as_string(conn)}")
             
             if skip_execution:
-                return jsonify({"sql_query": sql_query.as_string(conn)})            
+                return jsonify({"sql_query": sqlparse.format(sql_query.as_string(conn), reindent=True)})            
           
 
             with conn.cursor() as cur:
