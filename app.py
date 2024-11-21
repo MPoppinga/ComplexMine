@@ -128,15 +128,15 @@ def get_molecule(pdb_id):
         return jsonify({"error": f"Error retrieving molecule: {str(e)}"}), 500
 
 
-def get_extended_search_query(selected_pairs, use_postgis=False):
+def get_extended_search_query(selected_pairs, use_postgis=False) -> sql.Composed:
     return generate_search_query(selected_pairs, use_postgis, use_partition_cache=True)
 
 
-def get_basic_search_query(selected_pairs, use_postgis=False):
+def get_basic_search_query(selected_pairs, use_postgis=False) -> sql.Composed:
     return generate_search_query(selected_pairs, use_postgis, use_partition_cache=False)
 
 
-def generate_search_query(selected_pairs, use_postgis=False, use_partition_cache=True):
+def generate_search_query(selected_pairs, use_postgis=False, use_partition_cache=True) -> sql.Composed:
     if not use_partition_cache:
         # Build Extended query without partition cache
         if use_postgis:
@@ -144,10 +144,9 @@ def generate_search_query(selected_pairs, use_postgis=False, use_partition_cache
         else:
             query = generate_original_search_query(selected_pairs)
         return query
-    
-    
-    else: # Using partition cache
-        # PART1: Generate Base Query for searching in cache
+
+    else:  # Using partition cache
+        # Generate Base Query for searching in cache
         if use_postgis:
             base_query = generate_postgis_search_query(selected_pairs, base_query=True)
         else:
@@ -156,47 +155,52 @@ def generate_search_query(selected_pairs, use_postgis=False, use_partition_cache
         if PUSH_TO_QUEUE:
             partitioncache.queue.push_to_queue(base_query.as_string())
 
-        ## CREATE PARTITION CACHE QUERY
+        # Get Partition Keys for the base query from cache
         cachetype = args.cachetype
         partiton_key_set, num_total_build_hashes, num_used_hashes = partitioncache.apply_cache.get_partition_keys(
             base_query.as_string(), partitioncache.cache_handler.get_cache_handler(cachetype), partition_key="complex_data_id"
         )
 
-        # PART2: Build Extended Query for application (e.g. LIMIT clause, PartitionList, PDB_ID id via comple_data table)
-        
+        # Build Extended Query for application (e.g. LIMIT clause, PartitionList, PDB_ID id via comple_data table)
         if use_postgis:
-            query = generate_postgis_search_query(selected_pairs, base_query=False)
+            query = generate_postgis_search_query(selected_pairs, base_query=False, limit=0)
         else:
-            query = generate_original_search_query(selected_pairs, base_query=False)
-        
-        # TODO OTHER OPTIONS FOR PARTITION CACHE QUERY (e.g. use tmp table and hom many joins)
+            query = generate_original_search_query(selected_pairs, base_query=False, limit=0)
 
         ## ADD PARTITION CACHE QUERY TO ORIGINAL QUERY (Simple IN clause for smaller numbe roor TMP TABLE)
         if partiton_key_set is not None:
-            
-            if len(partiton_key_set) < USE_TMP_TABLE_FOR_PARTITIONCACHE_OVER_NUM_PARTITIONS:    
-                part_cache_query = sql.SQL(" AND cd.complex_data_id IN ({})").format(sql.SQL(", ").join(sql.Literal(key) for key in partiton_key_set))
-                
-                if "LIMIT" in query.as_string():
-                    query, _ = query.as_string().split("LIMIT")
-                    query = sql.SQL(query) + part_cache_query + sql.SQL(" LIMIT 500")  # type: ignore
-                else:
-                    query += part_cache_query
-                
+            query_str = query.as_string()
+
+            if len(partiton_key_set) < USE_TMP_TABLE_FOR_PARTITIONCACHE_OVER_NUM_PARTITIONS:
+                query_str = partitioncache.apply_cache.extend_query_with_partition_keys(
+                    query_str, partiton_key_set, partition_key="complex_data_id", method="IN", p0_alias="cd"
+                )
+
             else:
-                # TODO: Use tmp table for large partition key sets
-                #query += sql.SQL(" AND cd.pdb_id IN (SELECT pdb_id FROM tmp_partition_cache WHERE pdb_id IN ({}) )").format(sql.SQL(", ").join(sql.Literal(key) for key in partiton_key_set))
-                pass
-            
-            
-            app.logger.info(f"Created partition cache query with {num_used_hashes} used hashes out of {num_total_build_hashes} total, restricting it to {len(partiton_key_set)} partitions")
+                TMP_JOIN_ALL = False  # TODO: Needs heuristic which is faster in which cases
+
+                if TMP_JOIN_ALL:
+                    query_str = partitioncache.apply_cache.extend_query_with_partition_keys(
+                        query_str, partiton_key_set, partition_key="complex_data_id", method="TMP_TABLE_JOIN", p0_alias=None
+                    )
+                else:
+                    query_str = partitioncache.apply_cache.extend_query_with_partition_keys(
+                        query_str, partiton_key_set, partition_key="complex_data_id", method="TMP_TABLE_JOIN", p0_alias="cd"
+                    )
+
+            app.logger.info(
+                f"Created partition cache query with {num_used_hashes} used hashes out of {num_total_build_hashes} total, restricting it to {len(partiton_key_set)} partitions"
+            )
         else:
-            app.logger.info(f"Created partition cache query with {num_used_hashes} used hashes out of {num_total_build_hashes} total, but no partitions were found")
-    
-        return query
+            app.logger.info(
+                f"Created partition cache query with {num_used_hashes} used hashes out of {num_total_build_hashes} total, but no partitions were found"
+            )
+            query_str = query.as_string()
+
+        return sql.SQL(query_str) + sql.SQL(" LIMIT 500")  # type: ignore
 
 
-def generate_original_search_query(selected_pairs, base_query=False) -> sql.Composed:
+def generate_original_search_query(selected_pairs, base_query=False, limit=500) -> sql.Composed:
     atoms = {}
     distances = {}
     for pair in selected_pairs:
@@ -211,19 +215,19 @@ def generate_original_search_query(selected_pairs, base_query=False) -> sql.Comp
         SELECT p0.complex_data_id,
             {match_columns}
         FROM data_points p0""").format(
-                match_columns=sql.SQL(", ").join(sql.SQL("{}.id AS match_{}").format(sql.Identifier(f"p{i}"), sql.Literal(i)) for i in atoms.keys())
-            )
+            match_columns=sql.SQL(", ").join(sql.SQL("{}.id AS match_{}").format(sql.Identifier(f"p{i}"), sql.Literal(i)) for i in atoms.keys())
+        )
         join_table_alias = "p0"
-    
+
     else:
         sql_query = sql.SQL("""
         SELECT cd.pdb_id,
             {match_columns}
         FROM complex_data cd""").format(
-                match_columns=sql.SQL(", ").join(sql.SQL("{}.id AS match_{}").format(sql.Identifier(f"p{i}"), sql.Literal(i)) for i in atoms.keys())
-            )
+            match_columns=sql.SQL(", ").join(sql.SQL("{}.id AS match_{}").format(sql.Identifier(f"p{i}"), sql.Literal(i)) for i in atoms.keys())
+        )
         join_table_alias = "cd"
-    
+
     for i in range(1, num_points + 1):
         sql_query += sql.SQL(", data_points {0}").format(sql.Identifier(f"p{i}"))
 
@@ -254,18 +258,18 @@ def generate_original_search_query(selected_pairs, base_query=False) -> sql.Comp
 
     sql_query += sql.SQL(" AND ").join(conditions)
 
-    if not base_query:
+    if not base_query and limit:
         # Add LIMIT clause to the query
-        sql_query += sql.SQL(" LIMIT 500")
+        sql_query += sql.SQL(" LIMIT {0}").format(sql.Literal(limit))
 
     return sql_query
 
 
-def generate_postgis_search_query(selected_pairs, base_query=False):
+def generate_postgis_search_query(selected_pairs, base_query=False, limit=500):
     if base_query:
         app.logger.warning("Base query not supported for PostGIS")
         # TODO Implement base query
-    
+
     atoms = {}
     distances = {}
     for pair in selected_pairs:
@@ -324,7 +328,7 @@ def generate_postgis_search_query(selected_pairs, base_query=False):
     query += sql.SQL(" AND ").join(conditions)
 
     # Add LIMIT clause to the query
-    query += sql.SQL(" LIMIT 500")
+    query += sql.SQL(" LIMIT {0}").format(sql.Literal(limit))
 
     return query
 
@@ -347,20 +351,25 @@ def search():
     try:
         sql_query = get_extended_search_query(selected_pairs, use_postgis)
 
-
-        
         with psycopg.connect(**db_params) as conn:
             app.logger.debug(f"Generated SQL query: {sql_query.as_string(conn)}")
-            
+
             if skip_execution:
-                return jsonify({"sql_query": sqlparse.format(sql_query.as_string(conn), reindent=True)})            
-          
+                return jsonify({"sql_query": sqlparse.format(sql_query.as_string(conn), reindent=True)})
 
             with conn.cursor() as cur:
                 app.logger.debug("Executing SQL query")
                 start_time = time.perf_counter()
+
+                count_extra_queries = 0
+                for _ in sql_query.as_string(conn).split(";"):
+                    count_extra_queries += 1
                 cur.execute(sql_query)
                 app.logger.debug("SQL query executed successfully")
+
+                for _ in range(count_extra_queries):
+                    cur.nextset()  # Skip potential TMP Table creation empty resultsets
+
                 columns = [desc[0] for desc in cur.description] if cur.description else []
                 results = []
                 for row in cur.fetchall():
