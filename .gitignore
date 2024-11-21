@@ -8,7 +8,6 @@ data
 */__pycache__
 
 *.sqlite
-*.png
 *.env
 *.txt
 
