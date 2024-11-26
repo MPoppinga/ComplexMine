@@ -1,7 +1,7 @@
 #!/bin/sh
 
-mkdir -p /scratch/poppinga/af_db_swissprot
-cd /scratch/poppinga/af_db_swissprot
+mkdir -p data/af_db_swissprot
+cd data/af_db_swissprot
 curl -L -O https://ftp.ebi.ac.uk/pub/databases/alphafold/latest/swissprot_pdb_v4.tar \
     --retry 3 \
     --retry-delay 5 \
