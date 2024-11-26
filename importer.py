@@ -2,14 +2,15 @@ import os
 import gzip
 import argparse
 from dotenv import load_dotenv
-import psycopg
+from database.handlers import get_database_handler
 from pdb_import.db_importer import import_pdb_to_db
 from database.init_db import init_db, create_postgis_table
+from typing import Dict, Any
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
-def read_pdb_file(filename, file_path):
+def read_pdb_file(filename: str, file_path: str) -> str:
     if filename.endswith(".pdb"):
         with open(file_path, "r") as f:
             pdb_content = f.read()
@@ -21,14 +22,20 @@ def read_pdb_file(filename, file_path):
     return pdb_content
 
 
-def process_file(file_path, db_params, enable_rdkit):
+def process_file(file_path: str, db_params: Dict[str, Any], db_type: str, enable_rdkit: bool) -> None:
+    # Create a new database handler for this process
+    db_handler = get_database_handler(db_type, db_params)
+    
     filename = os.path.basename(file_path)
     pdb_content = read_pdb_file(filename, file_path)
     pdb_identifier = os.path.splitext(filename)[0]  # Use filename without extension as pdb_identifier
-    import_pdb_to_db(pdb_content, pdb_identifier, db_params, enable_rdkit)
+    try:
+        import_pdb_to_db(pdb_content, pdb_identifier, db_handler, enable_rdkit)
+    finally:
+        db_handler.disconnect()
 
 
-def import_pdb_files(folder_path, db_params, enable_rdkit):
+def import_pdb_files(folder_path: str, db_params: Dict[str, Any], db_type: str, enable_rdkit: bool) -> None:
     fp_list = []
     for filename in os.listdir(folder_path):
         file_path = os.path.join(folder_path, filename)
@@ -36,7 +43,10 @@ def import_pdb_files(folder_path, db_params, enable_rdkit):
             fp_list.append(file_path)
 
     with ProcessPoolExecutor(max_workers=30) as executor:
-        futures = [executor.submit(process_file, file_path, db_params, enable_rdkit) for file_path in fp_list]
+        futures = [
+            executor.submit(process_file, file_path, db_params, db_type, enable_rdkit)
+            for file_path in fp_list
+        ]
         for future in as_completed(futures):
             try:
                 future.result()
@@ -65,6 +75,15 @@ def main():
         help="Enable rdkit ( smarts search )",
     )
 
+    # Add database type argument
+    parser.add_argument(
+        "--dbtype",
+        type=str,
+        default="postgresql",
+        choices=["postgresql", "mysql"],
+        help="Type of database to use (postgresql or mysql)",
+    )
+
     args = parser.parse_args()
 
     # Load environment variables from database.env
@@ -79,23 +98,26 @@ def main():
         "port": os.getenv("DB_PORT", "5432"),
     }
 
-    with psycopg.connect(**db_params) as conn:
+    # Create database handler for main process
+    db_handler = get_database_handler(args.dbtype, db_params)
+
+    try:
         # Initialize the database
-        init_db(conn, args.enable_rdkit)
+        init_db(db_handler, args.enable_rdkit)
 
-    # IMPORT mode
-    if args.import_pdb:
-        if not args.pdb_folder:
-            parser.error("--pdb_folder is required when using --import_pdb")
-        # Import PDB files from the specified folder
-        import_pdb_files(args.pdb_folder, db_params, args.enable_rdkit)
+        # IMPORT mode
+        if args.import_pdb:
+            if not args.pdb_folder:
+                parser.error("--pdb_folder is required when using --import_pdb")
+            # Import PDB files from the specified folder
+            import_pdb_files(args.pdb_folder, db_params, args.dbtype, args.enable_rdkit)
 
-    # CREATE POSTGIS mode
-    if args.create_postgis:
-        with psycopg.connect(**db_params) as conn:
-            create_postgis_table(conn)
-        print("PostGIS table created successfully")
-
+        # CREATE POSTGIS mode
+        if args.create_postgis:
+            create_postgis_table(db_handler)
+            print("PostGIS table created successfully")
+    finally:
+        db_handler.disconnect()
 
 
 if __name__ == "__main__":
