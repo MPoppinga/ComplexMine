@@ -1,4 +1,3 @@
-from typing import Any
 from database.handlers import DatabaseHandler, PostgresHandler, MySQLHandler
 
 
@@ -80,56 +79,3 @@ def init_db(db_handler: DatabaseHandler, enable_rdkit: bool = False) -> None:
     conn.commit()
 
 
-def create_postgis_table(db_handler: DatabaseHandler) -> None:
-    if not isinstance(db_handler, PostgresHandler):
-        raise ValueError("PostGIS tables can only be created with PostgreSQL")
-        
-    conn = db_handler.get_connection()
-    with conn.cursor() as cur:
-        # Enable PostGIS extension
-        cur.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
-        cur.execute("CREATE EXTENSION IF NOT EXISTS btree_gist;")
-
-        print("Creating data_points_postgis")
-
-        # Create data_points_postgis table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS data_points_postgis (
-                id SERIAL PRIMARY KEY,
-                complex_data_id INTEGER NOT NULL,
-                element SMALLINT NOT NULL,
-                type TEXT NOT NULL,
-                origin TEXT NOT NULL,
-                group_name TEXT NOT NULL,
-                geom GEOMETRY(POINTZ, 0) NOT NULL,
-                FOREIGN KEY (complex_data_id) REFERENCES complex_data(complex_data_id)
-            );
-        """)
-
-        print("Populating data_points_postgis")
-
-        # Populate data_points_postgis from data_points
-        cur.execute("""
-            INSERT INTO data_points_postgis (complex_data_id, element, type, origin, group_name, geom)
-            SELECT complex_data_id, element, type, origin, group_name, ST_MakePoint(x, y, z)
-            FROM data_points
-            ON CONFLICT DO NOTHING;
-        """)
-
-        print("Creating index on complex_data_id for data_points_postgis")
-        # Create index on complex_data_id for data_points_postgis
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_data_points_postgis_complex_data_id ON data_points_postgis (complex_data_id);"
-        )
-
-        print("Creating spatial index on geom column")
-        # Create spatial index on geom column
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_data_points_postgis_geom ON data_points_postgis USING GIST (geom);")
-
-        print("Creating index on idx_data_points_postgiss_full for data_points_postgis")
-        # Create index on complex_data_id for data_points_postgis
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_data_points_postgiss_full ON data_points_postgis (complex_data_id, geom, element, origin, id);"
-        )
-
-    conn.commit()

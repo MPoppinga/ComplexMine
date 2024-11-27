@@ -30,16 +30,6 @@ class DatabaseHandler(ABC):
         pass
 
     @abstractmethod
-    def execute_query(self, query: str, params: Optional[tuple] = None) -> Any:
+    def execute_query(self, query: str, params: Optional[tuple] = None) -> tuple[list[str], list[tuple]]:
         """Execute a query and return the results"""
         pass
-
-    @abstractmethod
-    def create_point_geometry(self, x: float, y: float, z: float) -> str:
-        """Create a point geometry string for spatial queries"""
-        pass
-
-    @abstractmethod
-    def get_distance_query(self, point1: str, point2: str, distance: float) -> str:
-        """Get the SQL for calculating distance between two points"""
-        pass 

@@ -1,15 +1,9 @@
 import mysql.connector
-from mysql.connector import Error as MySQLError
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from .base_handler import DatabaseHandler
-import time
 
 
 class MySQLHandler(DatabaseHandler):
-    def __init__(self, db_params: Dict[str, Any]):
-        super().__init__(db_params)
-        self.max_retries = 3
-        self.retry_delay = 1  # seconds
 
     def connect(self) -> Any:
         """Establish a connection to the database"""
@@ -24,6 +18,11 @@ class MySQLHandler(DatabaseHandler):
                 "collation": "utf8mb4_general_ci",
                 "use_unicode": True,
                 "connect_timeout": 60,  # 60 seconds timeout
+                "pool_name": "mypool",
+                "pool_size": 5,
+                "get_warnings": True,
+                "raise_on_warnings": True,
+                "connection_timeout": 3600
             }
             self._connection = mysql.connector.connect(**mysql_params)
 
@@ -32,31 +31,10 @@ class MySQLHandler(DatabaseHandler):
                 cursor.execute("SET NAMES utf8mb4")
                 cursor.execute("SET CHARACTER SET utf8mb4")
                 cursor.execute("SET character_set_connection=utf8mb4")
-                cursor.execute("SET SESSION wait_timeout=28800")  # 8 hours
-                cursor.execute("SET SESSION interactive_timeout=28800")  # 8 hours
+
         return self._connection
 
-    def ensure_connection(self) -> Any:
-        """Ensure the connection is alive and reconnect if necessary"""
-        for attempt in range(self.max_retries):
-            try:
-                if not self._connection or not self._connection.is_connected():
-                    self.connect()
-                else:
-                    # Test the connection with a simple query
-                    try:
-                        with self._connection.cursor() as cursor:
-                            cursor.execute("SELECT 1")
-                    except MySQLError:
-                        self._connection = None
-                        self.connect()
-                return self._connection
-            except MySQLError as e:
-                if attempt == self.max_retries - 1:  # Last attempt
-                    raise
-                time.sleep(self.retry_delay * (attempt + 1))  # Exponential backoff
-                self._connection = None  # Force reconnection
-        return self._connection
+    
 
     def disconnect(self) -> None:
         """Close the database connection"""
@@ -66,49 +44,38 @@ class MySQLHandler(DatabaseHandler):
 
     def get_connection(self) -> Any:
         """Get a connection, ensuring it's alive"""
-        return self.ensure_connection()
+        return self.connect()
 
-    def execute_query(self, query: str, params: Optional[tuple] = None) -> Any:
-        """Execute a query with automatic reconnection on failure"""
-        max_attempts = 2  # Try once, retry once if connection lost
-        attempt = 0
-        last_error = None
-        
-        while attempt < max_attempts:
-            conn = self.ensure_connection()
-            cursor = None
-            try:
-                cursor = conn.cursor()
-                if params:
-                    cursor.execute(query, params)
-                else:
-                    cursor.execute(query)
-                try:
-                    result = cursor.fetchall()
-                    return result
-                except mysql.connector.errors.InterfaceError:
-                    return None
-            except MySQLError as e:
-                last_error = e
-                if "Lost connection" in str(e) or "Connection not available" in str(e):
-                    attempt += 1
-                    if attempt < max_attempts:
-                        self._connection = None
-                        time.sleep(self.retry_delay)
-                        continue
-                raise
-            finally:
-                if cursor:
-                    cursor.close()
-        
-        if last_error:
-            raise last_error
-        raise MySQLError("Failed to execute query after maximum retries")
+    def execute_query(self, query: str, params: Optional[tuple] = None) -> tuple[list[str], list[tuple]]:
+        """_summary_
 
-    def create_point_geometry(self, x: float, y: float, z: float) -> str:
-        return f"POINT({x} {y} {z})"
+        Args:
+            query (str): SQL query to execute
+            params (Optional[tuple], optional): Parameters to use with the query. Defaults to None.
 
-    def get_distance_query(self, point1: str, point2: str, distance: float) -> str:
-        return f"""
-        ABS(ST_Distance({point1}, {point2}) - {distance}) <= 0.1
+        Returns:
+            tuple[list[str], list[tuple]]: Return list of column names and list of tuples with results
         """
+        
+        # split query into multiple queries if necessary
+        
+        if ";" in query:
+            query_list = query.split(";")
+        else:
+            query_list = [query]
+
+        
+        conn = self.get_connection()
+
+        with conn.cursor() as cursor:
+            
+            for query in query_list:
+                cursor.execute(query, params)              
+                if cursor.description:  
+                    try:
+                        return [i[0] for i in cursor.description], cursor.fetchall()
+                    except mysql.connector.errors.InterfaceError:
+                        pass
+            return [], []
+
+

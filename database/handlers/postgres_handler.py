@@ -1,5 +1,5 @@
 import psycopg
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from .base_handler import DatabaseHandler
 
 class PostgresHandler(DatabaseHandler):
@@ -13,26 +13,21 @@ class PostgresHandler(DatabaseHandler):
             self._connection.close()
             self._connection = None
 
-    def get_connection(self) -> Any:
+    def get_connection(self):
         return self.connect()
 
     def execute_query(self, query: str, params: Optional[tuple] = None) -> Any:
         conn = self.get_connection()
         with conn.cursor() as cur:
-            if params:
-                cur.execute(query, params)
-            else:
-                cur.execute(query)
-            try:
-                return cur.fetchall()
-            except psycopg.ProgrammingError:
-                return None
-
-    def create_point_geometry(self, x: float, y: float, z: float) -> str:
-        return f"ST_MakePoint({x}, {y}, {z})"
-
-    def get_distance_query(self, point1: str, point2: str, distance: float) -> str:
-        return f"""
-        ST_3DDWithin({point1}, {point2}, {distance} + 0.1)
-        AND NOT ST_3DDWithin({point1}, {point2}, {distance} - 0.1)
-        """ 
+            count_extra_queries = -1
+            for query_part in query.split(";"):
+                if query_part.strip(): # Ignore empty queries (e.g. trailing ; in query)
+                    count_extra_queries += 1
+                
+            results = cur.execute(query, params)
+            for _ in range(count_extra_queries):                
+                cur.nextset()  # Skip potential TMP Table creation empty resultsets       
+            
+            columns = [desc[0] for desc in results.description] if results and results.description else []
+            return columns, cur.fetchall()
+  

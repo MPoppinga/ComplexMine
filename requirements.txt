@@ -4,6 +4,8 @@ sqlalchemy
 Flask
 Flask-CORS
 psycopg[binary]
+
+mysql-connector-python
 rdkit-pypi
 redis
 partitioncache @ git+https://github.com/MPoppinga/PartitionCache@main
