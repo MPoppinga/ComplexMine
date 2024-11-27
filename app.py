@@ -8,21 +8,24 @@ import partitioncache.apply_cache
 import partitioncache.cache_handler
 import partitioncache.query_processor
 import partitioncache.queue
-import psycopg
+import sqlglot
 import sqlparse
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 from flask_cors import CORS
 from psycopg import sql
 
+from database.handlers import get_database_handler
+
 USE_TMP_TABLE_FOR_PARTITIONCACHE_OVER_NUM_PARTITIONS = 100_000
 PUSH_TO_QUEUE = True
-
+TMP_JOIN_ALL = False  # TODO: Needs heuristic which is faster in which cases
 
 # Add argument parser
 parser = argparse.ArgumentParser(description="Run the Flask application with partition cache settings")
-parser.add_argument("--cachetype", type=str, default="shelf", choices=["shelf", "redis", "rocksdb"], help="Type of partition cache to use (shelf or redis)")
+parser.add_argument("--cachetype", type=str, default="shelve", choices=["shelve", "redis", "rocksdb"], help="Type of partition cache to use (shelve or redis)")
 parser.add_argument("--database_env", type=str, default="database.env", help="Path to the database.env file")
+parser.add_argument("--dbtype", type=str, default="postgresql", choices=["postgresql", "mysql"], help="Type of database to use (postgresql or mysql)")
 args = parser.parse_args()
 
 
@@ -36,13 +39,24 @@ CORS(app)  # Enable Cross-Origin Resource Sharing
 logging.basicConfig(level=logging.DEBUG)
 
 # Database connection parameters
-db_params = {
-    "dbname": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": os.getenv("DB_PORT", "5432"),
-}
+if args.dbtype == "postgresql":
+    db_params = {
+        "dbname":   os.getenv("PG_DB_NAME"),
+        "user":     os.getenv("PG_DB_USER"),
+        "password": os.getenv("PG_DB_PASSWORD"),
+        "host":     os.getenv("PG_DB_HOST", "localhost"),
+        "port":     os.getenv("PG_DB_PORT", "5432"),
+    }
+elif args.dbtype == "mysql":
+    db_params = {
+        "dbname":    os.getenv("MY_DB_NAME"),
+        "user":      os.getenv("MY_DB_USER"),
+        "password":  os.getenv("MY_DB_PASSWORD"),
+        "host":      os.getenv("MY_DB_HOST", "localhost"),
+        "port":      os.getenv("MY_DB_PORT", "3306"),
+    }
+else:
+    raise ValueError(f"Invalid database type: {args.dbtype}")
 
 
 @app.route("/")
@@ -56,28 +70,31 @@ def get_pdb_identifiers():
     if len(search_term) > 50:
         return jsonify({"error": "Search term too long"}), 400
     try:
-        with psycopg.connect(**db_params) as conn:
-            with conn.cursor() as cur:
-                if search_term:
-                    cur.execute(
-                        sql.SQL("""
-                        SELECT pdb_id
-                        FROM complex_data
-                        WHERE pdb_id ILIKE {}
-                        ORDER BY pdb_id
-                        LIMIT 25
-                        """).format(sql.Literal("%" + search_term + "%"))
-                    )
-                else:
-                    cur.execute("""
-                        SELECT pdb_id
-                        FROM complex_data
-                        ORDER BY pdb_id
-                        LIMIT 25
-                    """)
-                pdb_data = [{"id": row[0]} for row in cur.fetchall()]
-                print(pdb_data)
-
+        with get_database_handler(args.dbtype, db_params) as handler:
+            if search_term:
+                _, pdb_data = handler.execute_query(
+                    sql.SQL("""
+                    SELECT pdb_id
+                    FROM complex_data
+                    WHERE pdb_id ILIKE {}
+                    ORDER BY pdb_id
+                    LIMIT 25
+                        """)
+                    .format(sql.Literal("%" + search_term + "%"))
+                    .as_string()
+                )
+            else:
+                _, pdb_data = handler.execute_query(
+                    sql.SQL("""
+                    SELECT pdb_id
+                    FROM complex_data
+                    ORDER BY pdb_id
+                    LIMIT 25
+                        """).as_string()
+                )
+            pdb_data = [{"id": row[0]} for row in pdb_data]
+            print(pdb_data)
+        
         if not pdb_data:
             app.logger.warning("No PDB identifiers found matching the search criteria.")
         else:
@@ -92,65 +109,66 @@ def get_pdb_identifiers():
 @app.route("/get_molecule/<pdb_id>")
 def get_molecule(pdb_id):
     try:
-        with psycopg.connect(**db_params) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL("""
-                    SELECT id, element, type, origin, x, y, z
-                    FROM data_points
-                    WHERE data_points.complex_data_id = (
-                        SELECT complex_data_id FROM complex_data WHERE pdb_id = {}
-                    )
-                    """).format(sql.Literal(pdb_id))
+        with get_database_handler(args.dbtype, db_params) as handler:
+            _, atoms = handler.execute_query(
+                sql.SQL("""
+                SELECT id, element, type, origin, x, y, z
+                FROM data_points
+                WHERE data_points.complex_data_id = (
+                    SELECT complex_data_id FROM complex_data WHERE pdb_id = {}
                 )
-                atoms = cur.fetchall()
-                if not atoms:
-                    app.logger.warning(f"No atoms found for PDB ID: {pdb_id}")
-                    return jsonify({"error": "No atoms found"}), 404
+                """)
+                .format(sql.Literal(pdb_id))
+                .as_string()
+            )
+            if not atoms:
+                app.logger.warning(f"No atoms found for PDB ID: {pdb_id}")
+                return jsonify({"error": "No atoms found"}), 404
 
-                atom_list = [
-                    {
-                        "id": atom[0],
-                        "element": atom[1],
-                        "type": atom[2],
-                        "origin": atom[3],
-                        "x": atom[4],
-                        "y": atom[5],
-                        "z": atom[6],
-                    }
-                    for atom in atoms
-                ]
+            atom_list = [
+                {
+                    "id": atom[0],
+                    "element": atom[1],
+                    "type": atom[2],
+                    "origin": atom[3],
+                    "x": atom[4],
+                    "y": atom[5],
+                    "z": atom[6],
+                }
+                for atom in atoms
+            ]
 
-                app.logger.info(f"Retrieved {len(atom_list)} atoms for PDB ID: {pdb_id}")
-                return jsonify(atom_list)
+            app.logger.info(f"Retrieved {len(atom_list)} atoms for PDB ID: {pdb_id}")
+            return jsonify(atom_list)
     except Exception as e:
         app.logger.error(f"Error retrieving molecule for PDB ID {pdb_id}: {str(e)}")
         return jsonify({"error": f"Error retrieving molecule: {str(e)}"}), 500
 
 
-def get_extended_search_query(selected_pairs, use_postgis=False) -> sql.Composed:
-    return generate_search_query(selected_pairs, use_postgis, use_partition_cache=True)
+def get_extended_search_query(selected_pairs) -> str:
+    query = generate_search_query(selected_pairs, use_partition_cache=True).as_string()
+
+    if args.dbtype == "mysql":
+        # Parse and transpile the query from PostgreSQL to MySQL
+        query_list = []
+        for q in query.split(";"):
+            qm = sqlglot.transpile(q, read="postgres", write="mysql")[0]
+            query_list.append(qm)
+        query = ";".join(query_list)
+
+    return query
 
 
-def get_basic_search_query(selected_pairs, use_postgis=False) -> sql.Composed:
-    return generate_search_query(selected_pairs, use_postgis, use_partition_cache=False)
-
-
-def generate_search_query(selected_pairs, use_postgis=False, use_partition_cache=True) -> sql.Composed:
+def generate_search_query(selected_pairs,  use_partition_cache=True) -> sql.Composed:
     if not use_partition_cache:
         # Build Extended query without partition cache
-        if use_postgis:
-            query = generate_postgis_search_query(selected_pairs)
-        else:
-            query = generate_original_search_query(selected_pairs)
+        query = generate_search_query_sql(selected_pairs, base_query=False)
         return query
 
     else:  # Using partition cache
+        
         # Generate Base Query for searching in cache
-        if use_postgis:
-            base_query = generate_postgis_search_query(selected_pairs, base_query=True)
-        else:
-            base_query = generate_original_search_query(selected_pairs, base_query=True)
+        base_query = generate_search_query_sql(selected_pairs, base_query=True)
 
         if PUSH_TO_QUEUE:
             partitioncache.queue.push_to_queue(base_query.as_string())
@@ -162,10 +180,8 @@ def generate_search_query(selected_pairs, use_postgis=False, use_partition_cache
         )
 
         # Build Extended Query for application (e.g. LIMIT clause, PartitionList, PDB_ID id via comple_data table)
-        if use_postgis:
-            query = generate_postgis_search_query(selected_pairs, base_query=False, limit=0)
-        else:
-            query = generate_original_search_query(selected_pairs, base_query=False, limit=0)
+
+        query = generate_search_query_sql(selected_pairs, base_query=False, limit=0)
 
         ## ADD PARTITION CACHE QUERY TO ORIGINAL QUERY (Simple IN clause for smaller numbe roor TMP TABLE)
         if partiton_key_set is not None:
@@ -177,16 +193,26 @@ def generate_search_query(selected_pairs, use_postgis=False, use_partition_cache
                 )
 
             else:
-                TMP_JOIN_ALL = False  # TODO: Needs heuristic which is faster in which cases
-
-                if TMP_JOIN_ALL:
-                    query_str = partitioncache.apply_cache.extend_query_with_partition_keys(
-                        query_str, partiton_key_set, partition_key="complex_data_id", method="TMP_TABLE_JOIN", p0_alias=None
-                    )
+               
+                if args.dbtype == "postgresql":
+                    analyze_tmp_table = True
                 else:
-                    query_str = partitioncache.apply_cache.extend_query_with_partition_keys(
-                        query_str, partiton_key_set, partition_key="complex_data_id", method="TMP_TABLE_JOIN", p0_alias="cd"
+                    analyze_tmp_table = False
+                    
+                if TMP_JOIN_ALL:
+                    alias = None
+                else:
+                    alias = "cd"
+
+                query_str = partitioncache.apply_cache.extend_query_with_partition_keys(
+                    query_str,
+                        partiton_key_set,
+                        partition_key="complex_data_id",
+                        method="TMP_TABLE_JOIN",
+                        p0_alias=alias,
+                        analyze_tmp_table=analyze_tmp_table,
                     )
+
 
             app.logger.info(
                 f"Created partition cache query with {num_used_hashes} used hashes out of {num_total_build_hashes} total, restricting it to {len(partiton_key_set)} partitions"
@@ -200,7 +226,7 @@ def generate_search_query(selected_pairs, use_postgis=False, use_partition_cache
         return sql.SQL(query_str) + sql.SQL(" LIMIT 500")  # type: ignore
 
 
-def generate_original_search_query(selected_pairs, base_query=False, limit=500) -> sql.Composed:
+def generate_search_query_sql(selected_pairs, base_query=False, limit=500) -> sql.Composed:
     atoms = {}
     distances = {}
     for pair in selected_pairs:
@@ -265,73 +291,6 @@ def generate_original_search_query(selected_pairs, base_query=False, limit=500) 
     return sql_query
 
 
-def generate_postgis_search_query(selected_pairs, base_query=False, limit=500):
-    if base_query:
-        app.logger.warning("Base query not supported for PostGIS")
-        # TODO Implement base query
-
-    atoms = {}
-    distances = {}
-    for pair in selected_pairs:
-        for atom in [pair["atom1"], pair["atom2"]]:
-            atoms[atom["matchid"]] = atom
-        distances[(pair["atom1"]["matchid"], pair["atom2"]["matchid"])] = pair["distance"]
-
-    num_points = len(atoms)
-    query = sql.SQL("""
-    SELECT cd.pdb_id,
-           {match_columns}
-    FROM complex_data cd
-    """).format(
-        match_columns=sql.SQL(", ").join(sql.SQL("{0}.id AS {1}").format(sql.Identifier(f"p{str(i)}"), sql.Literal(f"match_{i}")) for i in atoms.keys())
-    )
-
-    for i in range(1, num_points + 1):
-        query += sql.SQL(", data_points_postgis {0}").format(sql.Identifier(f"p{str(i)}"))
-
-    query += sql.SQL(" WHERE ")
-
-    conditions = []
-
-    for i in range(1, num_points + 1):
-        conditions.append(sql.SQL("{0}.complex_data_id = cd.complex_data_id").format(sql.Identifier(f"p{str(i)}")))
-
-    for id, atom in atoms.items():
-        ident = sql.Identifier(f"p{id}")
-        if atom["element"] is not None:
-            conditions.append(sql.SQL("{0}.element = {1}").format(ident, sql.Literal(atom["element"])))
-        if atom["origin"] is not None:
-            conditions.append(sql.SQL("{0}.origin = {1}").format(ident, sql.Literal(atom["origin"])))
-
-    for (p1, p2), dist in distances.items():
-        p1 = sql.Identifier(f"p{p1}")
-        p2 = sql.Identifier(f"p{p2}")
-        conditions.append(
-            sql.SQL("""
-        ST_3DDWithin(
-            {0}.geom,
-            {1}.geom,
-            {2} + 0.1
-        )
-        """).format(p1, p2, sql.Literal(dist))
-        )
-        conditions.append(
-            sql.SQL("""NOT
-        ST_3DDWithin(
-            {0}.geom,
-            {1}.geom,
-            {2} - 0.1
-        )
-        """).format(p1, p2, sql.Literal(dist))
-        )
-
-    query += sql.SQL(" AND ").join(conditions)
-
-    # Add LIMIT clause to the query
-    query += sql.SQL(" LIMIT {0}").format(sql.Literal(limit))
-
-    return query
-
 
 @app.route("/search", methods=["POST"])
 def search():
@@ -339,51 +298,42 @@ def search():
     if data is None:
         return jsonify({"error": "No data received"}), 400
     selected_pairs = data.get("selected_pairs", [])  # The pairs to search for
-    use_postgis = data.get("use_postgis", False)  # Use PostGIS for spatial search
     skip_execution = data.get("skip_execution", False)  # Skip execution and return SQL query only to display while query will be executed in the background
 
-    app.logger.info(f"Search request - use_postgis: {use_postgis}, skip_execution: {skip_execution}")
+    app.logger.info(f"Search request - skip_execution: {skip_execution}")
     app.logger.debug(f"Selected pairs: {selected_pairs}")
 
     if not selected_pairs:
         return jsonify({"error": "No pairs selected"}), 400
 
     try:
-        sql_query = get_extended_search_query(selected_pairs, use_postgis)
+        sql_query = get_extended_search_query(selected_pairs)
+        app.logger.debug(f"Generated SQL query: {sql_query}")
+        if skip_execution:
+            return jsonify({"sql_query": sqlparse.format(sql_query, reindent=True)})
 
-        with psycopg.connect(**db_params) as conn:
-            app.logger.debug(f"Generated SQL query: {sql_query.as_string(conn)}")
+        with get_database_handler(args.dbtype, db_params) as handler:
+            
+            app.logger.debug("Executing SQL query")            
+            
+            start_time = time.perf_counter()
 
-            if skip_execution:
-                return jsonify({"sql_query": sqlparse.format(sql_query.as_string(conn), reindent=True)})
+            columns, query_result = handler.execute_query(sql_query)
+            app.logger.debug("SQL query executed successfully")
 
-            with conn.cursor() as cur:
-                app.logger.debug("Executing SQL query")
-                start_time = time.perf_counter()
-
-                count_extra_queries = 0
-                for _ in sql_query.as_string(conn).split(";"):
-                    count_extra_queries += 1
-                cur.execute(sql_query)
-                app.logger.debug("SQL query executed successfully")
-
-                for _ in range(count_extra_queries):
-                    cur.nextset()  # Skip potential TMP Table creation empty resultsets
-
-                columns = [desc[0] for desc in cur.description] if cur.description else []
-                results = []
-                for row in cur.fetchall():
-                    result = {"pdb_id": row[0]}
-                    matches = {col.split("_")[1]: int(row[i]) for i, col in enumerate(columns[1:], 1)}
-                    result["matches"] = matches
-                    results.append(result)
+            results = []
+            for row in query_result:                
+                matches = {col.split("_")[1]: int(row[i]) for i, col in enumerate(columns[1:], 1)}
+                result = {"pdb_id": row[0], "matches": matches}
+                results.append(result)
 
             limit_reached = len(results) == 500
             req_time = time.perf_counter() - start_time
             app.logger.info(f"Search completed. Found {len(results)} results in {req_time:.2f} seconds.")
+            handler.disconnect()
             return jsonify(
                 {
-                    "sql_query": sql_query.as_string(conn) if use_postgis else str(sql_query),
+                    "sql_query": str(sql_query),
                     "results": results,
                     "limit_reached": limit_reached,
                 }

@@ -32,7 +32,6 @@
     <script>
         let elapsedTime = 0;
         let timerInterval;
-        let usePostGIS = new URLSearchParams(window.location.search).get('usePostGIS') === 'true';
 
         function startTimer() {
             timerInterval = setInterval(() => {
@@ -87,8 +86,7 @@
         }
 
         // This function will be called from molecule_viewer.js
-        function initializeSearchResults(sqlQuery, searchData, usePostGISValue) {
-            usePostGIS = usePostGISValue;
+        function initializeSearchResults(sqlQuery, searchData) {
             document.getElementById('sqlQuery').value = sqlQuery;
             document.getElementById('sqlQuery').style.display = 'block';
             document.getElementById('copySqlBtn').style.display = 'inline-block';
@@ -101,7 +99,6 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     selected_pairs: searchData,
-                    use_postgis: usePostGIS,
                     skip_execution: false
                 })
             })

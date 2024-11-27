@@ -290,7 +290,7 @@ document.getElementById('searchButton').addEventListener('click', function() {
     }));
 
     // Open a new tab with the search results template
-    const newTab = window.open(`/search_results?usePostGIS=${document.getElementById('usePostGIS').checked}`, '_blank');
+    const newTab = window.open(`/search_results`, '_blank');
 
     // Wait for the new tab to load
     newTab.addEventListener('load', function() {
@@ -300,7 +300,6 @@ document.getElementById('searchButton').addEventListener('click', function() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 selected_pairs: searchData,
-                use_postgis: document.getElementById('usePostGIS').checked,
                 skip_execution: true
             })
         })
