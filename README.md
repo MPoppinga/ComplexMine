@@ -22,6 +22,7 @@ This application uses PartitionCache to speed up database queries. For more info
 
 Requirements
 - PostgreSQL database (or compatible)
+  -  Alternatively: MySQL or MariaDB, however in our tests worse performance
 - Redis (or compatible)
 - Python >= 3.9
 
@@ -31,7 +32,7 @@ For this demo application we use AlphaFold2 Data, however all PDB-style data sou
 
 For more information on the datasets in the download scripts see [https://alphafold.ebi.ac.uk]
 
-Run 
+Run for example
 > download_af_human.sh // (smaller dataset) or 
 > download_af_swiss_prot.sh // (larger dataset)
 
