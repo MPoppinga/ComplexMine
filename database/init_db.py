@@ -75,6 +75,14 @@ def init_db(db_handler: DatabaseHandler, enable_rdkit: bool = False) -> None:
             "CREATE INDEX IF NOT EXISTS data_points_complex_data_id_idx ON data_points (complex_data_id, element, origin);"
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_complex_data_pdb_id ON complex_data (pdb_id);")
+        
+        # Analyze tables
+        if isinstance(db_handler, PostgresHandler):
+            cur.execute("ANALYZE complex_data;")
+            cur.execute("ANALYZE data_points;")
+        elif isinstance(db_handler, MySQLHandler):
+            cur.execute("ANALYZE TABLE data_points PERSISTENT FOR ALL;")
+            cur.execute("ANALYZE TABLE complex_data PERSISTENT FOR ALL;")
 
     conn.commit()
 

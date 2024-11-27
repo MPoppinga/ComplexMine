@@ -10,3 +10,4 @@ rdkit-pypi
 redis
 partitioncache @ git+https://github.com/MPoppinga/PartitionCache@main
 sqlparse
+sqlglot
