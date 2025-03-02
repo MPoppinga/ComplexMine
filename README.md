@@ -22,7 +22,7 @@ This application uses PartitionCache to speed up database queries. For more info
 
 Requirements
 - PostgreSQL database (or compatible)
-  -  Alternatively: MySQL or MariaDB, however in our tests worse performance
+  -  Alternatively: MySQL or MariaDB, however in our tests PostgreSQL showed better performance
 - Redis (or compatible)
 - Python >= 3.9
 
@@ -67,3 +67,9 @@ pcache-observer --db_backend=postgresql --db_env_file=database.env --cache_backe
 ![Resultview](docs/Screenshot0_1Result.png)
 
 Protein Strucutres: AlphaFold Data Copyright (2022) DeepMind Technologies Limited.
+
+
+
+# License
+
+This program is licensed under the GPLv3 license. See [LICENSE](LICENSE) for details.
