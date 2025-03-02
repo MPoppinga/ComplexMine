@@ -2,7 +2,6 @@ from Bio import PDB
 import warnings
 import io
 from typing import Dict, Any, List
-from rdkit import Chem
 from database.handlers import DatabaseHandler, PostgresHandler
 
 
@@ -50,6 +49,7 @@ def import_pdb_to_db(pdb_content: str, pdb_identifier: str, db_handler: Database
             
             # Also calculate and insert smiles
             if enable_rdkit:
+                from rdkit import Chem
                 mol = Chem.MolFromPDBBlock(pdb_content)
                 if mol is not None:
                     if isinstance(db_handler, PostgresHandler):
