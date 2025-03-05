@@ -23,10 +23,59 @@ This application uses PartitionCache to speed up database queries. For more info
 Requirements
 - PostgreSQL database (or compatible)
   -  Alternatively: MySQL or MariaDB, however in our tests PostgreSQL showed better performance
-- Redis (or compatible)
+- Redis (or compatible) as cache backend
 - Python >= 3.9
 
-#### Download data
+### Running with Docker
+
+The application can be run using Docker Compose:
+
+1. The Docker setup uses the configuration file `database.env.example` which is already configured for the Docker environment.
+
+2. Build and start all services:
+```bash
+docker compose up -d
+```
+
+3. View logs:
+```bash
+docker compose logs -f
+```
+
+4. Stop all services:
+```bash
+docker compose down
+```
+
+#### Docker Environment Variables
+
+The Docker setup includes the following environment variables that control the behavior of the application:
+
+- `DOWNLOAD_DATA`: When set to `true`, the container will download the AlphaFold human dataset if it doesn't already exist
+- `IMPORT_DATA`: When set to `true`, the container will import the PDB files into the database if they haven't been imported yet
+
+You can modify these variables in the `compose.yaml` file:
+
+```yaml
+environment:
+  - DOWNLOAD_DATA=true  # Set to false to skip download
+  - IMPORT_DATA=true    # Set to false to skip import
+```
+
+##### Starting Docker Compose
+Compose will start:
+1. The ComplexMine web application (accessible at http://localhost:5000)
+2. PostgreSQL database
+3. Redis cache server
+4. PartitionCache Observer (pcache-observer) for monitoring and caching database queries
+
+
+#### PartitionCache Observer
+
+The Docker Compose setup includes the pcache-observer service, which monitors database queries and utelizes caching for improved performance. The pcache-observer is part of the PartitionCache module.
+
+
+### Manually Download data
 
 For this demo application we use AlphaFold2 Data, however all PDB-style data sources should work.
 
@@ -54,7 +103,7 @@ visit [http://localhost:5000]
 ### Start PartitionCache Observer
 (optional)
 ```
-pcache-observer --db_backend=postgresql --db_env_file=database.env --cache_backend=redis  --partition_key="complex_data_id" --db-name=alphafold_swissprot  --long_running_query_timeout=300s
+pcache-observer --db_backend=postgresql --db_env_file=database.env --cache_backend=redis  --partition_key="complex_data_id" --db-name=proteins  --long_running_query_timeout=300s
 ```
 
 

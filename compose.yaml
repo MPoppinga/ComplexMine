@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cm-app
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - database.env.example
+    environment:
+      - DOWNLOAD_DATA=true
+      - IMPORT_DATA=true
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:latest
+    container_name: cm-postgres
+    env_file:
+      - database.env.example
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: proteins
+    #ports:
+    #  - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  redis:
+    image: redis:latest
+    container_name: cm-redis
+    #ports:
+    #  - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pcache-observer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cm-pcache-observer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - database.env.example
+    entrypoint: []
+    command: pcache-observer --db_backend=postgresql --cache_backend=redis --partition_key=complex_data_id --long_running_query_timeout=300s
+    restart: unless-stopped
+volumes:
+  postgres_data:
+  redis_data:
