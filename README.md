@@ -72,8 +72,7 @@ Compose will start:
 
 #### PartitionCache Observer
 
-The Docker Compose setup includes the pcache-observer service, which monitors database queries and utelizes caching for improved performance. The pcache-observer is part of the PartitionCache module.
-
+The Docker Compose setup includes the pcache-observer service, which monitors database queries and utilizes caching for improved performance. The pcache-observer is part of the PartitionCache module.
 
 ### Manually Download data
 
