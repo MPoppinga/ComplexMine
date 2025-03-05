@@ -1,9 +1,11 @@
-import mysql.connector
 from typing import Any, Optional
 from .base_handler import DatabaseHandler
 
 
 class MySQLHandler(DatabaseHandler):
+    def __init__(self, db_params: dict[str, Any]):
+        import mysql.connector
+        super().__init__(db_params)
 
     def connect(self) -> Any:
         """Establish a connection to the database"""
