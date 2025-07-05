@@ -17,6 +17,9 @@ let currentAtomData = [];
 let isInitialLoad = true;
 let isAddingPairInNGL = false;
 let tempPairAtoms = [];
+let isLoadingFromURL = false;
+let renderTimeout = null;
+let isLoadingMolecule = false;
 
 function getElementColor(atomicNumber) {
     return elementColors[atomicNumber] || elementColors['default'];
@@ -30,7 +33,15 @@ function getElementSymbol(atomicNumber) {
 }
 
 function loadMolecule(pdb_id) {
+    // Prevent duplicate loads
+    if (isLoadingMolecule) {
+        console.log('Already loading molecule, skipping duplicate call for:', pdb_id);
+        return;
+    }
+    
     console.log('Loading molecule:', pdb_id);
+    isLoadingMolecule = true;
+    
     // Clear existing components and picks
     stage.removeAllComponents();
     pickedAtoms = [];
@@ -48,22 +59,34 @@ function loadMolecule(pdb_id) {
         })
         .then(atomData => {
             console.log('Atom data received:', atomData.slice(0, 5));
+            console.log(`Total atoms in molecule: ${atomData.length}`);
             if (!atomData || atomData.length === 0) {
                 throw new Error('Received empty atom data');
             }
             
+            console.time('processAtomData');
             currentAtomData = atomData;
+            console.timeEnd('processAtomData');
             
             // Create a shape component for the atoms
+            console.time('createNGLShape');
             const shape = new NGL.Shape('atom_points');
-            atomData.forEach((atom, index) => {
+            
+            // Limit atoms for performance (only render first 5000 atoms)
+            const atomsToRender = atomData.slice(0, 5000);
+            console.log(`Rendering ${atomsToRender.length} of ${atomData.length} atoms`);
+            
+            atomsToRender.forEach((atom, index) => {
                 const color = getElementColor(atom.element);
                 shape.addSphere([atom.x, atom.y, atom.z], color, 0.5, `atom${index}`);
             });
+            console.timeEnd('createNGLShape');
             
             // Add the shape component to the stage
+            console.time('addToStage');
             const shapeComp = stage.addComponentFromObject(shape);
             shapeComp.addRepresentation('point');
+            console.timeEnd('addToStage');
             
             // Only set the view once when the molecule is initially loaded
             if (isInitialLoad) {
@@ -93,6 +116,12 @@ function loadMolecule(pdb_id) {
         })
         .catch(error => {
             console.error('Error loading molecule:', error);
+            // Even if molecule data is not available, try to load state from URL
+            // This allows query points to be loaded even if the PDB is not in the database
+            loadStateFromURL();
+        })
+        .finally(() => {
+            isLoadingMolecule = false; // Always clear the flag
         });
 }
 
@@ -182,13 +211,22 @@ function unhighlightAtoms() {
 }
 
 function loadStateFromURL() {
+    // This function is now only called when a molecule is successfully loaded
+    // The main URL state loading is handled in initializePage() -> loadAvailableMolecules()
     const hash = window.location.hash.slice(1);
     if (hash) {
         try {
             const state = JSON.parse(decodeURIComponent(hash));
-            document.getElementById('pdbSelect').value = state.pdbId;
-            pickedAtoms = state.pickedAtoms;
-            distancePairs = state.distancePairs;
+            console.log('Loading state from URL (after molecule load):', state);
+            
+            // Only set the atoms and distance pairs (dropdown is already set)
+            if (state.pickedAtoms) {
+                pickedAtoms = state.pickedAtoms;
+            }
+            if (state.distancePairs) {
+                distancePairs = state.distancePairs;
+            }
+            
             updateAtomList();
             updateAtomHighlights();
             updatePairList();
@@ -226,10 +264,38 @@ function fetchPDBIdentifiers(searchTerm = '') {
                 option.text = pdb.id;
                 pdbSelect.add(option);
             });
-            // Load the first molecule by default if it's the initial load
+            // Check if we have a URL state that specifies a molecule
+            const hash = window.location.hash.slice(1);
+            let urlState = null;
+            if (hash) {
+                try {
+                    urlState = JSON.parse(decodeURIComponent(hash));
+                } catch (error) {
+                    console.error('Error parsing URL state:', error);
+                }
+            }
+            
+            // Load the molecule specified in URL state, or first molecule by default
             if (data.length > 0 && isInitialLoad) {
-                console.log('Loading first molecule:', data[0].id);
-                loadMolecule(data[0].id);
+                let moleculeToLoad = data[0].id;
+                
+                if (urlState && urlState.pdbId) {
+                    // Check if the URL molecule is in the current list
+                    const urlMolecule = data.find(pdb => pdb.id === urlState.pdbId);
+                    if (urlMolecule) {
+                        moleculeToLoad = urlState.pdbId;
+                        console.log('Loading molecule from URL:', moleculeToLoad);
+                    } else {
+                        // Search for the specific molecule from URL
+                        console.log('Molecule from URL not found, searching for:', urlState.pdbId);
+                        fetchPDBIdentifiers(urlState.pdbId);
+                        return;
+                    }
+                } else {
+                    console.log('Loading first molecule:', moleculeToLoad);
+                }
+                
+                loadMolecule(moleculeToLoad);
                 isInitialLoad = false;
             }
         })
@@ -240,96 +306,249 @@ function fetchPDBIdentifiers(searchTerm = '') {
 
 // Create and add the search input to the DOM
 function createSearchInput() {
-    const searchInput = document.createElement('input');
-    searchInput.type = 'text';
-    searchInput.id = 'pdbSearch';
-    searchInput.placeholder = 'Search PDB...';
+    try {
+        const pdbSelect = document.getElementById('pdbSelect');
+        if (!pdbSelect) {
+            console.error('pdbSelect element not found');
+            return;
+        }
 
-    const pdbSelectContainer = document.getElementById('pdbSelect').parentNode;
-    pdbSelectContainer.insertBefore(searchInput, document.getElementById('pdbSelect'));
+        // Check if search input already exists
+        if (document.getElementById('pdbSearch')) {
+            console.log('Search input already exists');
+            return;
+        }
 
-    // Add event listener for search input
-    searchInput.addEventListener('input', function() {
-        fetchPDBIdentifiers(this.value);
-    });
+        const searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.id = 'pdbSearch';
+        searchInput.placeholder = 'Search PDB...';
+
+        const pdbSelectContainer = pdbSelect.parentNode;
+        pdbSelectContainer.insertBefore(searchInput, pdbSelect);
+
+        // Add event listener for search input
+        searchInput.addEventListener('input', function() {
+            fetchPDBIdentifiers(this.value);
+        });
+        
+        console.log('Search input created successfully');
+    } catch (error) {
+        console.error('Error creating search input:', error);
+    }
 }
 
-// Call this function to create the search input when the page loads
-createSearchInput();
+// Note: createSearchInput() will be called from initializePage() to ensure DOM is ready
+// Note: Initialization is now handled by initializePage() at the bottom of the file
+// fetchPDBIdentifiers(); // Removed to prevent duplicate initialization
 
-// Initial fetch of PDB identifiers (first 25)
-fetchPDBIdentifiers();
+// Function to set up the pdbSelect event listener
+function setupPdbSelectListener() {
+    try {
+        const pdbSelect = document.getElementById('pdbSelect');
+        if (!pdbSelect) {
+            console.error('pdbSelect element not found for event listener');
+            return;
+        }
 
-// Modify the existing event listener for pdbSelect
-document.getElementById('pdbSelect').addEventListener('change', function() {
-    const pdb_id = this.value;
-    console.log('Selection changed, loading molecule:', pdb_id);
-    loadMolecule(pdb_id);
-});
-
-// Implement search functionality
-// searchDatabase
-document.getElementById('searchButton').addEventListener('click', function() {
-
-    if (distancePairs.length === 0) {
-        alert('Please add at least one distance pair before searching.');
-        return;
-    }
-    const searchData = distancePairs.map(pair => ({
-        atom1: {
-            element: pair.atom1.element,
-            origin: pair.atom1.origin,
-            matchid: pickedAtoms.findIndex(a => a.id === pair.atom1.id) + 1
-        },
-        atom2: {
-            element: pair.atom2.element,
-            origin: pair.atom2.origin,
-            matchid: pickedAtoms.findIndex(a => a.id === pair.atom2.id) + 1
-        },
-        distance: pair.distance
-    }));
-
-    // Open a new tab with the search results template
-    const newTab = window.open(`/search_results`, '_blank');
-
-    // Wait for the new tab to load
-    newTab.addEventListener('load', function() {
-        // First, get the SQL query
-        fetch('/search', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                selected_pairs: searchData,
-                skip_execution: true
-            })
-        })
-        .then(response => {
-            if (!response.ok) {
-                return response.json().then(err => { throw err; });
+        pdbSelect.addEventListener('change', function() {
+            const pdb_id = this.value;
+            console.log('Selection changed, loading molecule:', pdb_id);
+            
+            // Don't trigger loadMolecule if we're currently loading from URL to avoid infinite loops
+            if (!isLoadingFromURL) {
+                loadMolecule(pdb_id);
             }
-            return response.json();
-        })
-        .then(data => {
-            if (data.error) {
-                throw new Error(data.error);
-            } else if (data.sql_query) {
-                // Initialize the search results in the new tab
-                newTab.initializeSearchResults(data.sql_query, searchData);
-            } else {
-                throw new Error('Unexpected response from server');
-            }
-        })
-        .catch(error => {
-            console.error('Error during search:', error);
-            newTab.document.getElementById('errorMessage').textContent = `An error occurred: ${error.message}. Please try again.`;
         });
-    });
-});
+        
+        console.log('PDB select listener set up successfully');
+    } catch (error) {
+        console.error('Error setting up PDB select listener:', error);
+    }
+}
 
-// Load initial state from URL
-window.addEventListener('load', loadStateFromURL);
+// Function to set up all event listeners
+function setupEventListeners() {
+    try {
+        // Search button
+        const searchButton = document.getElementById('searchButton');
+        if (!searchButton) {
+            console.error('searchButton element not found');
+            return;
+        }
+
+        searchButton.addEventListener('click', function() {
+            if (distancePairs.length === 0) {
+                alert('Please add at least one distance pair before searching.');
+                return;
+            }
+            
+            // Prepare search data
+            const searchData = distancePairs.map(pair => ({
+            atom1: {
+                element: pair.atom1.element,
+                origin: pair.atom1.origin,
+                matchid: pickedAtoms.findIndex(a => a.id === pair.atom1.id) + 1
+            },
+            atom2: {
+                element: pair.atom2.element,
+                origin: pair.atom2.origin,
+                matchid: pickedAtoms.findIndex(a => a.id === pair.atom2.id) + 1
+            },
+            distance: pair.distance
+        }));
+
+            // Check if auto-queue checkbox is checked
+            const autoQueueCheckbox = document.getElementById('autoQueueCheckbox');
+            const autoQueue = autoQueueCheckbox ? autoQueueCheckbox.checked : false;
+            
+            // Get SQL query first
+            fetch('/search', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    selected_pairs: searchData,
+                    skip_execution: true,  // Just get the SQL, don't execute
+                    auto_queue: autoQueue
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                // Open search results in new tab with proper separation
+                const sqlQuery = data.sql_query || '';
+                const searchParams = new URLSearchParams({
+                    query: sqlQuery,
+                    data: JSON.stringify(searchData)
+                });
+                
+                // Open in new tab - clean architecture
+                window.open(`/search_results.html?${searchParams.toString()}`, '_blank');
+            })
+            .catch(error => {
+                console.error('Error preparing search:', error);
+                alert(`Error preparing search: ${error.message}`);
+            });
+        });
+
+        // Add Pair button
+        const addPairButton = document.getElementById('addPairButton');
+        if (addPairButton) {
+            addPairButton.addEventListener('click', function() {
+                const atom1Select = document.getElementById('atom1Select');
+                const atom2Select = document.getElementById('atom2Select');
+                
+                if (!atom1Select || !atom2Select) {
+                    alert('Atom selection elements not found.');
+                    return;
+                }
+                
+                const atom1Index = atom1Select.value;
+                const atom2Index = atom2Select.value;
+                
+                if (atom1Index === '' || atom2Index === '') {
+                    alert('Please select both atoms for the pair.');
+                    return;
+                }
+                
+                const atom1 = pickedAtoms[atom1Index];
+                const atom2 = pickedAtoms[atom2Index];
+                
+                const dx = atom1.x - atom2.x;
+                const dy = atom1.y - atom2.y;
+                const dz = atom1.z - atom2.z;
+                const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                distancePairs.push({atom1, atom2, distance});
+                updatePairList();
+                updateURL();
+            });
+        }
+
+        // Add Pair in NGL button
+        const addPairNGLButton = document.getElementById('addPairNGLButton');
+        if (addPairNGLButton) {
+            addPairNGLButton.addEventListener('click', function() {
+                isAddingPairInNGL = !isAddingPairInNGL;
+                this.textContent = isAddingPairInNGL ? 'Cancel Add Pair' : 'Add Pair in NGL';
+                tempPairAtoms = [];
+            });
+        }
+        
+        console.log('Event listeners set up successfully');
+    } catch (error) {
+        console.error('Error setting up event listeners:', error);
+    }
+}
+
+// === Clean architecture: Search handled in separate page ===
+// UI state management functions removed - no longer needed with proper separation
+
+// === Search Results handled in separate page (search_results.html) ===
+// All search results functionality moved to proper template for clean architecture
+
+// Timer and loading functions moved to search_results.html template
+
+// Search results display removed - handled in search_results.html
+
+// === Search handled in separate page (search_results.html) ===
+
+// Cache stats display removed - handled in search_results.html
+
+// Results display removed - handled in search_results.html
+
+// Monitoring functions removed - handled in search_results.html
+
+// === Helper Functions for Molecule Viewer ===
+
+// === Search Results JavaScript functionality removed ===
+// All search results handling is now in search_results.html template
 
 function updateAtomHighlights() {
+    try {
+        // If no molecule data available, create shapes from picked atoms directly
+        if (!currentAtomData || currentAtomData.length === 0) {
+            console.log('No molecule data available, creating shapes from picked atoms');
+            let shapeComp = stage.getComponentsByName('atom_points')[0];
+            const shape = new NGL.Shape('atom_points');
+            
+            // Safety check: limit number of atoms to prevent browser freeze
+            const atomsToRender = pickedAtoms.slice(0, 10000);
+            console.log(`Rendering ${atomsToRender.length} picked atoms`);
+            
+            // Add spheres for picked atoms using their stored coordinate data
+            atomsToRender.forEach((atom, index) => {
+                if (atom && typeof atom.x === 'number' && typeof atom.y === 'number' && typeof atom.z === 'number') {
+                    const color = getElementColor(atom.element);
+                    const adjustedColor = color.map(c => Math.min(c * 1.2, 1)); // Make selected atoms brighter
+                    shape.addSphere([atom.x, atom.y, atom.z], adjustedColor, 0.75, `atom${index}`);
+                }
+            });
+
+            if (shapeComp) {
+                shapeComp.setShape(shape);
+                shapeComp.removeAllRepresentations();
+            } else {
+                shapeComp = stage.addComponentFromObject(shape);
+            }
+            
+            shapeComp.addRepresentation('point');
+            
+            // Debounce render to prevent browser freeze
+            if (renderTimeout) clearTimeout(renderTimeout);
+            renderTimeout = setTimeout(() => {
+                stage.viewer.requestRender();
+            }, 100);
+            return;
+        }
+    } catch (error) {
+        console.error('Error in updateAtomHighlights (no molecule data branch):', error);
+        return;
+    }
+    
+    // Normal case: molecule data is available
     let shapeComp = stage.getComponentsByName('atom_points')[0];
     const shape = new NGL.Shape('atom_points');
     
@@ -349,7 +568,12 @@ function updateAtomHighlights() {
     }
     
     shapeComp.addRepresentation('point');
-    stage.viewer.requestRender();
+    
+    // Debounce render to prevent browser freeze
+    if (renderTimeout) clearTimeout(renderTimeout);
+    renderTimeout = setTimeout(() => {
+        stage.viewer.requestRender();
+    }, 100);
 }
 
 function drawDistancePairs() {
@@ -507,31 +731,172 @@ function handlePairSelection(atom, index) {
     }
 }
 
-// Add event listener for the Add Pair button
-document.getElementById('addPairButton').addEventListener('click', function() {
-    const atom1Index = document.getElementById('atom1Select').value;
-    const atom2Index = document.getElementById('atom2Select').value;
+// These event listeners are now set up in setupEventListeners() function
+
+// Initialize page and load state from URL on page load
+function initializePage() {
+    console.log('Initializing page...');
     
-    if (atom1Index === '' || atom2Index === '') {
-        alert('Please select both atoms for the pair.');
-        return;
+    // Create the search input first
+    createSearchInput();
+    
+    // Set up event listeners
+    setupPdbSelectListener();
+    setupEventListeners();
+    
+    // Load available molecules first, then handle URL state
+    loadAvailableMolecules();
+}
+
+// Function to load available molecules into the dropdown
+function loadAvailableMolecules() {
+    fetch('/get_available_molecules')
+        .then(response => response.json())
+        .then(molecules => {
+            const pdbSelect = document.getElementById('pdbSelect');
+            pdbSelect.innerHTML = '<option value="">Select a molecule...</option>';
+            molecules.forEach(molecule => {
+                const option = document.createElement('option');
+                option.value = molecule;
+                option.textContent = molecule;
+                pdbSelect.appendChild(option);
+            });
+            
+            // After loading molecules, check if URL state contains a PDB ID
+            const hash = window.location.hash.slice(1);
+            if (hash) {
+                try {
+                    isLoadingFromURL = true; // Set flag to prevent infinite loops
+                    const state = JSON.parse(decodeURIComponent(hash));
+                    if (state.pdbId) {
+                        // Check if the molecule is in the dropdown
+                        const existingOption = Array.from(pdbSelect.options).find(option => option.value === state.pdbId);
+                        if (existingOption) {
+                            pdbSelect.value = state.pdbId;
+                            // loadMolecule will call loadStateFromURL internally, so we don't need to pass the state
+                            loadMolecule(state.pdbId);
+                        } else {
+                            // Add the PDB ID to dropdown and visualize query points
+                            console.log('PDB not in database, adding to dropdown and showing query points');
+                            const option = document.createElement('option');
+                            option.value = state.pdbId;
+                            option.textContent = state.pdbId + ' (not in DB)';
+                            pdbSelect.appendChild(option);
+                            
+                            // Set the value (change event is blocked by isLoadingFromURL flag)
+                            pdbSelect.value = state.pdbId;
+                            
+                            // Try to load molecule first, if it fails it will load query state in the catch block
+                            loadMolecule(state.pdbId);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error parsing URL state:', error);
+                } finally {
+                    isLoadingFromURL = false; // Clear flag
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Error loading available molecules:', error);
+        });
+}
+
+// Function to load only the query state (atoms and pairs) without molecule data
+function loadQueryStateOnly(state) {
+    console.log('Loading query state only:', state);
+    
+    // Safety check: limit the number of atoms to prevent browser crashes
+    if (state.pickedAtoms && state.pickedAtoms.length > 10000) {
+        console.warn('Too many picked atoms in URL state, limiting to first 10000 to prevent browser freeze');
+        state.pickedAtoms = state.pickedAtoms.slice(0, 10000);
     }
     
-    const atom1 = pickedAtoms[atom1Index];
-    const atom2 = pickedAtoms[atom2Index];
+    if (state.distancePairs && state.distancePairs.length > 5000) {
+        console.warn('Too many distance pairs in URL state, limiting to first 5000 to prevent browser freeze');
+        state.distancePairs = state.distancePairs.slice(0, 5000);
+    }
     
-    const dx = atom1.x - atom2.x;
-    const dy = atom1.y - atom2.y;
-    const dz = atom1.z - atom2.z;
-    const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
-    distancePairs.push({atom1, atom2, distance});
-    updatePairList();
-    updateURL();
-});
+    // Set the atoms and distance pairs
+    if (state.pickedAtoms) {
+        pickedAtoms = state.pickedAtoms;
+        console.log(`Loaded ${pickedAtoms.length} picked atoms from URL`);
+    }
+    if (state.distancePairs) {
+        distancePairs = state.distancePairs;
+        console.log(`Loaded ${distancePairs.length} distance pairs from URL`);
+    }
+    
+    // Update UI components with performance monitoring
+    try {
+        console.time('updateAtomList');
+        updateAtomList();
+        console.timeEnd('updateAtomList');
+        
+        console.time('updateAtomHighlights');
+        updateAtomHighlights(); // This will handle the case where currentAtomData is empty
+        console.timeEnd('updateAtomHighlights');
+        
+        console.time('updatePairList');
+        updatePairList();
+        console.timeEnd('updatePairList');
+        
+        console.time('drawDistancePairs');
+        drawDistancePairs();
+        console.timeEnd('drawDistancePairs');
+        
+        // Auto-zoom to show the query points (with delay to avoid conflicts)
+        if (pickedAtoms.length > 0) {
+            setTimeout(() => {
+                try {
+                    const bounds = calculateBounds(pickedAtoms);
+                    const center = bounds.center;
+                    const size = Math.max(bounds.size.x, bounds.size.y, bounds.size.z);
+                    stage.animationControls.zoomMove(
+                        new NGL.Vector3(center.x, center.y, center.z),
+                        size * 2,
+                        1000
+                    );
+                } catch (error) {
+                    console.error('Error during auto-zoom:', error);
+                }
+            }, 500); // Delay zoom to let rendering settle
+        }
+        console.log('Query state loaded successfully');
+    } catch (error) {
+        console.error('Error updating UI after loading query state:', error);
+    }
+}
 
-// Add event listener for the Add Pair in NGL button
-document.getElementById('addPairNGLButton').addEventListener('click', function() {
-    isAddingPairInNGL = !isAddingPairInNGL;
-    this.textContent = isAddingPairInNGL ? 'Cancel Add Pair' : 'Add Pair in NGL';
-    tempPairAtoms = [];
+// Helper function to calculate bounds of atoms
+function calculateBounds(atoms) {
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    
+    atoms.forEach(atom => {
+        minX = Math.min(minX, atom.x);
+        minY = Math.min(minY, atom.y);
+        minZ = Math.min(minZ, atom.z);
+        maxX = Math.max(maxX, atom.x);
+        maxY = Math.max(maxY, atom.y);
+        maxZ = Math.max(maxZ, atom.z);
+    });
+    
+    return {
+        center: {
+            x: (minX + maxX) / 2,
+            y: (minY + maxY) / 2,
+            z: (minZ + maxZ) / 2
+        },
+        size: {
+            x: maxX - minX,
+            y: maxY - minY,
+            z: maxZ - minZ
+        }
+    };
+}
+
+// Initialize the page when DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    initializePage();
 });

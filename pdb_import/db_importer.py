@@ -26,6 +26,18 @@ def convert_to_native_types(data_points: List[Dict[str, Any]]) -> List[Dict[str,
     return converted_points
 
 
+def check_pdb_exists(pdb_identifier: str, db_handler: DatabaseHandler) -> bool:
+    """
+    Check if a PDB identifier already exists in the database.
+    Returns True if it exists, False otherwise.
+    """
+    conn = db_handler.get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM complex_data WHERE pdb_id = %s", (pdb_identifier,))
+        count = cur.fetchone()[0]
+        return count > 0
+
+
 def import_pdb_to_db(pdb_content: str, pdb_identifier: str, db_handler: DatabaseHandler, enable_rdkit: bool) -> None:
     # Parse PDB content and extract interaction points
     data_points: List[Dict[str, Any]] = parse_pdb(pdb_content)
@@ -34,57 +46,67 @@ def import_pdb_to_db(pdb_content: str, pdb_identifier: str, db_handler: Database
     data_points = convert_to_native_types(data_points)
 
     conn = db_handler.get_connection()
-    with conn.cursor() as cur:
-        # Check if complex_data with pdb_id exists, if so get id, if not insert and get id
-        cur.execute("SELECT complex_data_id FROM complex_data WHERE pdb_id = %s", (pdb_identifier,))
+    try:
+        with conn.cursor() as cur:
+            # Check if complex_data with pdb_id exists, if so get id, if not insert and get id
+            cur.execute("SELECT complex_data_id FROM complex_data WHERE pdb_id = %s", (pdb_identifier,))
 
-        complex_data_id = cur.fetchone()
-        if complex_data_id is None:
-            cur.execute("INSERT INTO complex_data (pdb_id) VALUES (%s) RETURNING complex_data_id", (pdb_identifier,))
-            c = cur.fetchone()
-            if c is not None:
-                complex_data_id = c[0]
+            complex_data_id = cur.fetchone()
+            if complex_data_id is None:
+                cur.execute("INSERT INTO complex_data (pdb_id) VALUES (%s) RETURNING complex_data_id", (pdb_identifier,))
+                c = cur.fetchone()
+                if c is not None:
+                    complex_data_id = c[0]
+                else:
+                    raise Exception("Failed to insert complex data")
+                
+                # Also calculate and insert smiles
+                if enable_rdkit:
+                    from rdkit import Chem
+                    mol = Chem.MolFromPDBBlock(pdb_content)
+                    if mol is not None:
+                        if isinstance(db_handler, PostgresHandler):
+                            cur.execute(
+                                "UPDATE complex_data SET m = mol_from_pkl(%s) WHERE complex_data_id = %s", 
+                                (mol.ToBinary(), complex_data_id)
+                            )
+                        else:
+                            # For MySQL, store as binary
+                            cur.execute(
+                                "UPDATE complex_data SET m = %s WHERE complex_data_id = %s",
+                                (mol.ToBinary(), complex_data_id)
+                            )
+
+                for point in data_points:
+                    # Insert data_points
+                    cur.execute(
+                        """
+                    INSERT INTO data_points 
+                    (complex_data_id, element, type, origin, group_name, x, y, z)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                        (
+                            complex_data_id,
+                            point["element"],
+                            point["type"],
+                            point["origin"],
+                            point["group_name"],
+                            point["x"],
+                            point["y"],
+                            point["z"],
+                        ),
+                    )
+                
+                # Commit the transaction for this PDB file
+                conn.commit()
+                print(f"Imported {pdb_identifier} to database")
             else:
-                raise Exception("Failed to insert complex data")
-            
-            # Also calculate and insert smiles
-            if enable_rdkit:
-                from rdkit import Chem
-                mol = Chem.MolFromPDBBlock(pdb_content)
-                if mol is not None:
-                    if isinstance(db_handler, PostgresHandler):
-                        cur.execute(
-                            "UPDATE complex_data SET m = mol_from_pkl(%s) WHERE complex_data_id = %s", 
-                            (mol.ToBinary(), complex_data_id)
-                        )
-                    else:
-                        # For MySQL, store as binary
-                        cur.execute(
-                            "UPDATE complex_data SET m = %s WHERE complex_data_id = %s",
-                            (mol.ToBinary(), complex_data_id)
-                        )
-
-            for point in data_points:
-                # Insert data_points
-                cur.execute(
-                    """
-                INSERT INTO data_points 
-                (complex_data_id, element, type, origin, group_name, x, y, z)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                    (
-                        complex_data_id,
-                        point["element"],
-                        point["type"],
-                        point["origin"],
-                        point["group_name"],
-                        point["x"],
-                        point["y"],
-                        point["z"],
-                    ),
-                )
-            conn.commit()
-            print(f"Imported {pdb_identifier} to database")
+                # PDB already exists, no need to import
+                print(f"PDB {pdb_identifier} already exists in database")
+    except Exception as e:
+        # Rollback the transaction if anything goes wrong
+        conn.rollback()
+        raise e
 
 
 def parse_pdb(pdb_content):

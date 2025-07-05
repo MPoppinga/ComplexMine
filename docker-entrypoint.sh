@@ -59,4 +59,4 @@ fi
 
 # Start the application
 echo "Starting ComplexMine application..."
-exec "$@"
+exec python app.py --cachetype=redis --dbtype=postgresql

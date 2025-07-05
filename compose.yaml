@@ -23,14 +23,15 @@ services:
   postgres:
     image: postgres:latest
     container_name: cm-postgres
+    shm_size: 1gb
     env_file:
       - database.env.example
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: proteins
-    #ports:
-    #  - "5432:5432"
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -42,8 +43,8 @@ services:
   redis:
     image: redis:latest
     container_name: cm-redis
-    #ports:
-    #  - "6379:6379"
+    ports:
+      - "6379:6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -54,11 +55,11 @@ services:
       timeout: 5s
       retries: 5
 
-  pcache-observer:
+  pcache-monitor:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: cm-pcache-observer
+    container_name: cm-pcache-monitor
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,7 +68,7 @@ services:
     env_file:
       - database.env.example
     entrypoint: []
-    command: pcache-observer --db_backend=postgresql --cache_backend=redis --partition_key=complex_data_id --long_running_query_timeout=300s
+    command: pcache-monitor --cache-backend redis_set --db-backend postgresql --db-name proteins --env-file database.env.example --max-processes 8
     restart: unless-stopped
 volumes:
   postgres_data:

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Query Fragment Variant View</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.min.css">
+    <style>
+        body { padding: 20px; font-family: Arial, sans-serif; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 20px; }
+        .fragment-section { border: 1px solid #d1d1d1; padding: 20px; border-radius: 5px; }
+        .fragment-item { margin-bottom: 15px; padding: 15px; background-color: #f9f9f9; border-radius: 3px; }
+        .fragment-item.cached { background-color: #d4edda; border-left: 4px solid #28a745; }
+        .fragment-hash { font-family: monospace; font-size: 0.8em; color: #666; margin-bottom: 5px; }
+        .fragment-sql { font-family: monospace; font-size: 0.8em; background-color: #f4f4f4; padding: 10px; border-radius: 3px; overflow-x: auto; white-space: pre-wrap; }
+        .fragment-meta { font-size: 0.9em; color: #666; margin-top: 5px; }
+        .base-query { margin-bottom: 20px; padding: 15px; background-color: #e8f4fd; border-radius: 5px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .stat-box { text-align: center; padding: 15px; background-color: #f4f5f6; border-radius: 5px; }
+        .stat-number { font-size: 2em; font-weight: bold; color: #9b4dca; }
+        .stat-label { font-size: 0.9em; color: #666; }
+        #loader { text-align: center; margin: 20px 0; }
+        .error { color: red; padding: 10px; background-color: #ffeaea; border-radius: 3px; margin: 10px 0; }
+        .collapse-btn { background: none; border: none; color: #9b4dca; cursor: pointer; font-size: 0.9em; margin-bottom: 10px; }
+        .collapsible { display: none; }
+        .partition-keys { max-height: 100px; overflow-y: auto; font-size: 0.8em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Query Fragment Variant View</h1>
+        <p>This page shows how your search query is decomposed into fragments for caching and which fragments are currently cached.</p>
+        
+        <div id="loader" style="display: none;">
+            <p>Loading fragment analysis...</p>
+        </div>
+        
+        <div id="error" class="error" style="display: none;"></div>
+        
+        <div id="content" style="display: none;">
+            <!-- Base Query Section -->
+            <div class="base-query">
+                <h3>Base Query</h3>
+                <p>This is the original query that would be processed by the cache monitor:</p>
+                <div id="baseQuery" class="fragment-sql"></div>
+            </div>
+            
+            <!-- Statistics -->
+            <div class="stats">
+                <div class="stat-box">
+                    <div id="totalFragments" class="stat-number">0</div>
+                    <div class="stat-label">Total Hashes Searched</div>
+                </div>
+                <div class="stat-box">
+                    <div id="cachedFragments" class="stat-number">0</div>
+                    <div class="stat-label">Matched Hashes</div>
+                </div>
+                <div class="stat-box">
+                    <div id="cacheHitRate" class="stat-number">0%</div>
+                    <div class="stat-label">Of Searched Hashes Found</div>
+                </div>
+                <div class="stat-box">
+                    <div id="totalPartitions" class="stat-number">0</div>
+                    <div class="stat-label">Partitions Needed to Search</div>
+                </div>
+            </div>
+            
+            <div class="columns">
+                <!-- Queue Query Fragments Section -->
+                <div class="fragment-section">
+                    <h3>📤 Queue Query Fragments</h3>
+                    <p>These are the fragments that would be queued for cache processing. Green highlighted fragments are already cached:</p>
+                    <div id="queueFragments"></div>
+                </div>
+                
+                <!-- Extended Checking Variants Section -->
+                <div class="fragment-section">
+                    <h3>🔍 Extended Checking Variants</h3>
+                    <p>These are additional variants checked if they are in the cache. Green highlighted fragments match the query and are cached:</p>
+                    <div id="extendedVariants"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedPairs = {{ selected_pairs|safe }};
+        
+        function showError(message) {
+            document.getElementById('error').textContent = message;
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('loader').style.display = 'none';
+        }
+        
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+        
+        function toggleCollapse(element) {
+            const target = element.nextElementSibling;
+            if (target.style.display === 'none' || target.style.display === '') {
+                target.style.display = 'block';
+                element.textContent = element.textContent.replace('▶', '▼');
+            } else {
+                target.style.display = 'none';
+                element.textContent = element.textContent.replace('▼', '▶');
+            }
+        }
+        
+        function formatFragmentItem(fragment, showPartitions = false) {
+            let partitionInfo = '';
+            if (showPartitions && fragment.partition_count !== undefined && fragment.partition_count > 0) {
+                partitionInfo = `
+                    <div class="fragment-meta">
+                        <strong>Partitions:</strong> ${fragment.partition_count}
+                    </div>
+                `;
+            }
+            
+            const cssClass = fragment.is_cached ? 'fragment-item cached' : 'fragment-item';
+            const cacheStatus = fragment.is_cached ? '✅ Cached' : '❌ Not Cached';
+            
+            return `
+                <div class="${cssClass}">
+                    <div class="fragment-hash">Hash: ${fragment.hash} | ${cacheStatus}</div>
+                    <button class="collapse-btn" onclick="toggleCollapse(this)">▶ Show SQL</button>
+                    <div class="collapsible">
+                        <div class="fragment-sql">${fragment.sql_formatted || fragment.sql}</div>
+                    </div>
+                    ${partitionInfo}
+                </div>
+            `;
+        }
+        
+        function loadFragmentData() {
+            hideError();
+            document.getElementById('loader').style.display = 'block';
+            
+            // Load variant analysis
+            fetch('/get_variant_analysis', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({selected_pairs: selectedPairs})
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('loader').style.display = 'none';
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                // Display base query
+                document.getElementById('baseQuery').textContent = data.base_query_formatted || data.base_query;
+                
+                // Update statistics - use actual cache statistics that match search results
+                const totalFragments = data.total_hashes || 0;
+                const usedFragments = data.used_hashes || 0;
+                const hitRate = totalFragments > 0 ? Math.round((usedFragments / totalFragments) * 100) : 0;
+                const totalPartitions = data.partitions_found || 0;
+                
+                document.getElementById('totalFragments').textContent = totalFragments;
+                document.getElementById('cachedFragments').textContent = usedFragments;
+                document.getElementById('cacheHitRate').textContent = hitRate + '%';
+                document.getElementById('totalPartitions').textContent = totalPartitions;
+                
+                // Display queue fragments
+                const queueFragmentsDiv = document.getElementById('queueFragments');
+                if (data.queue_fragments.length === 0) {
+                    queueFragmentsDiv.innerHTML = '<p>No queue fragments generated.</p>';
+                } else {
+                    queueFragmentsDiv.innerHTML = data.queue_fragments.map(fragment => formatFragmentItem(fragment, true)).join('');
+                }
+                
+                // Display extended variants
+                const extendedVariantsDiv = document.getElementById('extendedVariants');
+                if (data.extended_variants.length === 0) {
+                    extendedVariantsDiv.innerHTML = '<p>No extended checking variants available.</p>';
+                } else {
+                    extendedVariantsDiv.innerHTML = data.extended_variants.map(fragment => formatFragmentItem(fragment, true)).join('');
+                }
+                
+                document.getElementById('content').style.display = 'block';
+            })
+            .catch(error => {
+                console.error('Error loading fragment data:', error);
+                showError('Error loading fragment data: ' + error.message);
+            });
+        }
+        
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!selectedPairs || selectedPairs.length === 0) {
+                showError('No search data provided. Please start a search from the main page.');
+                return;
+            }
+            loadFragmentData();
+        });
+    </script>
+</body>
+</html>

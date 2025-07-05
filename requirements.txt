@@ -10,3 +10,4 @@ redis
 partitioncache[db] @ git+https://github.com/MPoppinga/PartitionCache@main
 sqlparse
 sqlglot
+tqdm

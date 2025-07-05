@@ -25,6 +25,37 @@
         </div>
         <textarea id="sqlQuery" readonly style="display: none;"></textarea>
         <button id="copySqlBtn" style="display: none;" class="button">Copy SQL</button>
+        
+        <!-- PartitionCache Statistics -->
+        <div id="cacheStats" style="display: none; margin: 20px 0; padding: 15px; background-color: #f4f5f6; border-radius: 5px;">
+            <h3>🚀 PartitionCache Statistics</h3>
+            <div id="cacheStatsContent"></div>
+            <button id="addToCacheBtn" style="display: none;" class="button button-outline">Add Query Directly to Cache</button>
+            <button id="addToQueueBtn" style="display: none;" class="button button-outline">Add Query to Queue</button>
+            <button id="viewCacheOverviewBtn" class="button button-outline">View Cache Overview</button>
+            <button id="viewVariantBtn" class="button button-outline">View Query Fragments</button>
+            <button id="clearCacheBtn" class="button" style="background-color: #dc3545; border-color: #dc3545; margin-left: 10px;">Clear All Cache</button>
+            
+            <!-- Real-time monitoring section -->
+            <div id="monitoringSection" style="margin-top: 15px; padding: 10px; background-color: #f8f9fa; border-radius: 3px; display: none;">
+                <h4>📊 Real-time Monitoring</h4>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+                    <div>
+                        <strong>Original Queue:</strong><br>
+                        <span id="originalQueueCount">Loading...</span> queries pending
+                    </div>
+                    <div>
+                        <strong>Fragment Queue:</strong><br>
+                        <span id="fragmentQueueCount">Loading...</span> queries pending
+                    </div>
+                    <div>
+                        <strong>Cache Entries:</strong><br>
+                        <span id="cacheCount">Loading...</span> entries in cache
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <div id="results"></div>
         <div id="errorMessage"></div>
     </div>
@@ -52,6 +83,232 @@
         }
 
         document.getElementById('copySqlBtn').addEventListener('click', copySqlToClipboard);
+        
+        let currentSearchData = null;
+
+        function displayCacheStats(cacheStats, executionTime) {
+            const cacheStatsDiv = document.getElementById('cacheStatsContent');
+            const cacheStatsContainer = document.getElementById('cacheStats');
+            
+            if (!cacheStats.cache_enabled) {
+                cacheStatsContainer.style.display = 'none';
+                return;
+            }
+            
+            let statsHtml = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                    <div>
+                        <strong>Cache Type:</strong> ${cacheStats.cache_type || 'Unknown'}<br>
+                        <strong>Method:</strong> ${cacheStats.method || 'N/A'}
+                    </div>
+                    <div>
+                        <strong>Hash Statistics:</strong><br>
+                        Used: ${cacheStats.used_hashes || 0} / ${cacheStats.total_hashes || 0}
+                    </div>
+                    <div>
+                        <strong>Search Space:</strong><br>
+                        Partitions Candidates Found: ${cacheStats.partitions_found || 0}<br>
+                        Total DB Partitions: ${cacheStats.total_database_partitions || 'N/A'}<br>
+                        Reduced search space to ${cacheStats.search_space_reduction || '0%'} of partitions
+                    </div>
+                    <div>
+                        <strong>Performance:</strong><br>
+                        Execution Time: ${executionTime || 'N/A'}s
+                    </div>
+                </div>
+            `;
+            
+            if (cacheStats.partitions_found === 0) {
+                statsHtml += '<div style="margin-top: 10px; padding: 10px; background-color: #fff3cd; border-radius: 3px;"><strong>💡 Optimization Opportunity:</strong> This query was not found in cache. Consider adding it to improve future performance.</div>';
+            } else {
+                statsHtml += '<div style="margin-top: 10px; padding: 10px; background-color: #d4edda; border-radius: 3px;"><strong>✅ Cache Hit:</strong> Search space was reduced using cached partitions!</div>';
+            }
+            
+            // Always show cache management buttons
+            document.getElementById('addToCacheBtn').style.display = 'inline-block';
+            document.getElementById('addToQueueBtn').style.display = 'inline-block';
+            
+            cacheStatsDiv.innerHTML = statsHtml;
+            cacheStatsContainer.style.display = 'block';
+            
+            // Show monitoring section and start real-time updates
+            document.getElementById('monitoringSection').style.display = 'block';
+            startMonitoring();
+        }
+
+        function addQueryToCache() {
+            if (!currentSearchData) return;
+            
+            document.getElementById('addToCacheBtn').disabled = true;
+            document.getElementById('addToCacheBtn').textContent = 'Adding to Cache...';
+            
+            fetch('/cache_query_direct', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({selected_pairs: currentSearchData})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Query successfully added to cache! Future searches with this pattern will be faster.');
+                    document.getElementById('addToCacheBtn').style.display = 'none';
+                } else {
+                    alert('Failed to add query to cache: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                alert('Error adding query to cache: ' + error.message);
+            })
+            .finally(() => {
+                document.getElementById('addToCacheBtn').disabled = false;
+                document.getElementById('addToCacheBtn').textContent = 'Add Query Directly to Cache';
+            });
+        }
+
+        function addQueryToQueue() {
+            if (!currentSearchData) return;
+            
+            document.getElementById('addToQueueBtn').disabled = true;
+            document.getElementById('addToQueueBtn').textContent = 'Adding to Queue...';
+            
+            fetch('/cache_query_queue', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({selected_pairs: currentSearchData})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Query successfully added to processing queue! The query will be processed automatically by the cache monitor.');
+                } else {
+                    alert('Failed to add query to queue: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                alert('Error adding query to queue: ' + error.message);
+            })
+            .finally(() => {
+                document.getElementById('addToQueueBtn').disabled = false;
+                document.getElementById('addToQueueBtn').textContent = 'Add Query to Queue';
+            });
+        }
+
+        let monitoringInterval = null;
+
+        function startMonitoring() {
+            // Update immediately
+            updateQueueAndCacheStatus();
+            
+            // Set up interval for updates every 5 seconds
+            if (monitoringInterval) {
+                clearInterval(monitoringInterval);
+            }
+            monitoringInterval = setInterval(updateQueueAndCacheStatus, 5000);
+        }
+
+        function stopMonitoring() {
+            if (monitoringInterval) {
+                clearInterval(monitoringInterval);
+                monitoringInterval = null;
+            }
+        }
+
+        function updateQueueAndCacheStatus() {
+            // Update queue counts (original and fragment)
+            fetch('/queue_status')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('originalQueueCount').textContent = data.original_queue_count || '0';
+                    document.getElementById('fragmentQueueCount').textContent = data.fragment_queue_count || '0';
+                } else {
+                    document.getElementById('originalQueueCount').textContent = 'Error';
+                    document.getElementById('fragmentQueueCount').textContent = 'Error';
+                }
+            })
+            .catch(error => {
+                document.getElementById('originalQueueCount').textContent = 'Error';
+                document.getElementById('fragmentQueueCount').textContent = 'Error';
+            });
+
+            // Update cache count
+            fetch('/cache_count')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('cacheCount').textContent = data.cache_count || '0';
+                } else {
+                    document.getElementById('cacheCount').textContent = 'Error';
+                }
+            })
+            .catch(error => {
+                document.getElementById('cacheCount').textContent = 'Error';
+            });
+        }
+
+        function viewCacheOverview() {
+            fetch('/cache_stats')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Cache Overview:\\n\\n' + data.stats);
+                } else {
+                    alert('Failed to get cache overview: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                alert('Error getting cache overview: ' + error.message);
+            });
+        }
+
+        function clearAllCache() {
+            if (confirm('⚠️ Warning: This will permanently delete ALL cache entries!\\n\\nAre you sure you want to continue?')) {
+                document.getElementById('clearCacheBtn').disabled = true;
+                document.getElementById('clearCacheBtn').textContent = 'Clearing Cache...';
+                
+                fetch('/clear_cache', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('✅ All cache entries have been cleared successfully!');
+                        // Refresh monitoring data
+                        updateQueueAndCacheStatus();
+                    } else {
+                        alert('❌ Failed to clear cache: ' + (data.error || 'Unknown error'));
+                    }
+                })
+                .catch(error => {
+                    alert('❌ Error clearing cache: ' + error.message);
+                })
+                .finally(() => {
+                    document.getElementById('clearCacheBtn').disabled = false;
+                    document.getElementById('clearCacheBtn').textContent = 'Clear All Cache';
+                });
+            }
+        }
+
+        function viewVariants() {
+            if (!currentSearchData) {
+                alert('No search data available for variant view.');
+                return;
+            }
+            
+            // Open variant view in a new tab
+            const variantUrl = `/variant_view?selected_pairs=${encodeURIComponent(JSON.stringify(currentSearchData))}`;
+            window.open(variantUrl, '_blank');
+        }
+
+        // Stop monitoring when page is unloaded
+        window.addEventListener('beforeunload', stopMonitoring);
+
+        document.getElementById('addToCacheBtn').addEventListener('click', addQueryToCache);
+        document.getElementById('addToQueueBtn').addEventListener('click', addQueryToQueue);
+        document.getElementById('viewCacheOverviewBtn').addEventListener('click', viewCacheOverview);
+        document.getElementById('viewVariantBtn').addEventListener('click', viewVariants);
+        document.getElementById('clearCacheBtn').addEventListener('click', clearAllCache);
 
         function displayResults(results, searchData, limitReached) {
             const resultsDiv = document.getElementById('results');
@@ -85,42 +342,60 @@
             }
         }
 
-        // This function will be called from molecule_viewer.js
-        function initializeSearchResults(sqlQuery, searchData) {
-            document.getElementById('sqlQuery').value = sqlQuery;
-            document.getElementById('sqlQuery').style.display = 'block';
-            document.getElementById('copySqlBtn').style.display = 'inline-block';
-            document.getElementById('loader').style.display = 'block';
-            startTimer();
+        // Initialize from URL parameters
+        function initializeFromURL() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const sqlQuery = urlParams.get('query') || '';
+            const searchDataStr = urlParams.get('data') || '[]';
+            
+            try {
+                const searchData = JSON.parse(searchDataStr);
+                currentSearchData = searchData; // Store for cache operations
+                
+                document.getElementById('sqlQuery').value = sqlQuery;
+                document.getElementById('sqlQuery').style.display = 'block';
+                document.getElementById('copySqlBtn').style.display = 'inline-block';
+                document.getElementById('loader').style.display = 'block';
+                startTimer();
 
-            // Execute the search
-            fetch('/search', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    selected_pairs: searchData,
-                    skip_execution: false
+                // Execute the search
+                fetch('/search', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        selected_pairs: searchData,
+                        skip_execution: false
+                    })
                 })
-            })
-            .then(response => response.json())
-            .then(data => {
-                stopTimer();
-                document.getElementById('loader').style.display = 'none';
-                if (data.error) {
-                    throw new Error(data.error);
-                } else if (data.results) {
-                    displayResults(data.results, searchData, data.limit_reached);  
-                } else {
-                    throw new Error('Unexpected response from server');
-                }
-            })
-            .catch(error => {
-                stopTimer();
-                console.error('Error during search:', error);
-                document.getElementById('loader').style.display = 'none';
-                document.getElementById('errorMessage').textContent = `An error occurred: ${error.message}. Please try again.`;
-            });
+                .then(response => response.json())
+                .then(data => {
+                    stopTimer();
+                    document.getElementById('loader').style.display = 'none';
+                    if (data.error) {
+                        throw new Error(data.error);
+                    } else if (data.results) {
+                        displayResults(data.results, searchData, data.limit_reached);
+                        if (data.cache_stats) {
+                            displayCacheStats(data.cache_stats, data.execution_time_seconds);
+                        }
+                    } else {
+                        throw new Error('Unexpected response from server');
+                    }
+                })
+                .catch(error => {
+                    stopTimer();
+                    console.error('Error during search:', error);
+                    document.getElementById('loader').style.display = 'none';
+                    document.getElementById('errorMessage').textContent = `An error occurred: ${error.message}. Please try again.`;
+                });
+            } catch (error) {
+                console.error('Error parsing search data:', error);
+                document.getElementById('errorMessage').textContent = `Error initializing search: ${error.message}`;
+            }
         }
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', initializeFromURL);
     </script>
 </body>
 </html>
